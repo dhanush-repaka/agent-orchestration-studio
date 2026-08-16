@@ -1,0 +1,173 @@
+import { useStore, type Page } from '@/store';
+import { Icon } from '@/components/Icon';
+import { StatusBadge } from '@/components/StatusBadge';
+import {
+  LayoutDashboard, Bot, Workflow, PlayCircle, Plug, MessageSquareText,
+  BookOpen, Cpu, KeyRound, ClipboardCheck, Activity, ScrollText, Settings,
+  PanelLeftClose, PanelLeftOpen, Search, Bell, HelpCircle, Sun, Moon,
+  ChevronDown, Sparkles, Menu,
+} from 'lucide-react';
+import type { Environment } from '@/types';
+
+const NAV_ITEMS: { id: Page; label: string; icon: typeof LayoutDashboard }[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'agents', label: 'Agent Library', icon: Bot },
+  { id: 'workflow-builder', label: 'Workflow Builder', icon: Workflow },
+  { id: 'workflow-runs', label: 'Workflow Runs', icon: PlayCircle },
+  { id: 'tools', label: 'Tools & Integrations', icon: Plug },
+  { id: 'prompts', label: 'Prompt Library', icon: MessageSquareText },
+  { id: 'knowledge', label: 'Knowledge Sources', icon: BookOpen },
+  { id: 'models', label: 'Models', icon: Cpu },
+  { id: 'credentials', label: 'Credentials', icon: KeyRound },
+  { id: 'evaluations', label: 'Evaluations', icon: ClipboardCheck },
+  { id: 'monitoring', label: 'Monitoring', icon: Activity },
+  { id: 'audit', label: 'Audit Logs', icon: ScrollText },
+  { id: 'settings', label: 'Settings', icon: Settings },
+];
+
+const ENVIRONMENTS: Environment[] = ['development', 'qa', 'uat', 'production'];
+
+const ENV_COLORS: Record<Environment, string> = {
+  development: 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300',
+  qa: 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300',
+  uat: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+  production: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+};
+
+export function Layout({ children }: { children: React.ReactNode }) {
+  const page = useStore((s) => s.page);
+  const setPage = useStore((s) => s.setPage);
+  const collapsed = useStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const theme = useStore((s) => s.theme);
+  const toggleTheme = useStore((s) => s.toggleTheme);
+  const environment = useStore((s) => s.environment);
+  const setEnvironment = useStore((s) => s.setEnvironment);
+  const currentUser = useStore((s) => s.currentUser);
+
+  return (
+    <div className="h-screen flex flex-col overflow-hidden">
+      {/* Header */}
+      <header className="h-14 shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center px-4 gap-4 z-20">
+        <button onClick={toggleSidebar} className="btn-ghost p-2 lg:flex hidden" aria-label="Toggle sidebar">
+          {collapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
+        </button>
+
+        {/* Logo + name */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-sm">
+            <Sparkles className="w-5 h-5 text-white" />
+          </div>
+          <div className="hidden md:block">
+            <h1 className="text-sm font-bold text-slate-900 dark:text-white leading-tight">AI Agent Orchestration Studio</h1>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">Design, connect, execute, and monitor intelligent agent workflows</p>
+          </div>
+        </div>
+
+        {/* Workspace */}
+        <div className="hidden xl:flex items-center gap-1.5 ml-2 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300">
+          <span className="w-2 h-2 rounded-full bg-emerald-500" />
+          QE Workspace
+        </div>
+
+        {/* Environment selector */}
+        <div className="relative ml-auto lg:ml-2">
+          <select
+            value={environment}
+            onChange={(e) => setEnvironment(e.target.value as Environment)}
+            className={`appearance-none pl-3 pr-8 py-1.5 rounded-lg text-xs font-semibold border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 ${ENV_COLORS[environment]}`}
+          >
+            {ENVIRONMENTS.map((e) => (
+              <option key={e} value={e} className="capitalize bg-white dark:bg-slate-900 text-slate-900">{e}</option>
+            ))}
+          </select>
+          <ChevronDown className="w-3.5 h-3.5 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none opacity-60" />
+        </div>
+
+        {/* Search */}
+        <div className="relative hidden md:block w-48 lg:w-64">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search agents, workflows..."
+            className="w-full pl-9 pr-3 py-1.5 text-sm rounded-lg bg-slate-100 dark:bg-slate-800 border border-transparent focus:border-brand-400 focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-brand-400 transition"
+          />
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center gap-1 ml-auto md:ml-2">
+          <button className="btn-ghost p-2 relative" aria-label="Notifications">
+            <Bell className="w-5 h-5" />
+            <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />
+          </button>
+          <button className="btn-ghost p-2" aria-label="Help">
+            <HelpCircle className="w-5 h-5" />
+          </button>
+          <button onClick={toggleTheme} className="btn-ghost p-2" aria-label="Toggle theme">
+            {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
+          </button>
+          <div className="flex items-center gap-2 ml-1 pl-2 border-l border-slate-200 dark:border-slate-700">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white text-xs font-bold">
+              {currentUser.name.split(' ').map((n) => n[0]).join('')}
+            </div>
+            <div className="hidden lg:block">
+              <p className="text-xs font-semibold text-slate-900 dark:text-white leading-tight">{currentUser.name}</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{currentUser.role}</p>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Body */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sidebar */}
+        <aside className={`shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 transition-all duration-200 overflow-y-auto ${collapsed ? 'w-16' : 'w-60'}`}>
+          <nav className="p-2 space-y-0.5">
+            {NAV_ITEMS.map((item) => {
+              const active = page === item.id || (item.id === 'agents' && page === 'agent-config') || (item.id === 'workflow-runs' && page === 'run-details');
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setPage(item.id)}
+                  className={`nav-item w-full ${active ? 'nav-item-active' : 'nav-item-inactive'} ${collapsed ? 'justify-center' : ''}`}
+                  title={collapsed ? item.label : undefined}
+                >
+                  <item.icon className="w-[18px] h-[18px] shrink-0" />
+                  {!collapsed && <span className="truncate">{item.label}</span>}
+                </button>
+              );
+            })}
+          </nav>
+          {!collapsed && (
+            <div className="p-3 mt-2">
+              <div className="card p-3 bg-brand-50 dark:bg-brand-950 border-brand-200 dark:border-brand-800">
+                <div className="flex items-center gap-2 mb-1">
+                  <Icon name="Sparkles" className="w-4 h-4 text-brand-600 dark:text-brand-400" />
+                  <p className="text-xs font-semibold text-brand-700 dark:text-brand-300">Quick Start</p>
+                </div>
+                <p className="text-[11px] text-brand-600 dark:text-brand-400 mb-2">Load the sample QE workflow to explore the builder.</p>
+                <button onClick={() => { useStore.getState().setSelectedWorkflow('w1'); setPage('workflow-builder'); }} className="btn-primary w-full text-xs py-1.5">
+                  Open Sample Workflow
+                </button>
+              </div>
+            </div>
+          )}
+        </aside>
+
+        {/* Main */}
+        <main className="flex-1 overflow-auto bg-slate-50 dark:bg-slate-950">
+          {children}
+        </main>
+      </div>
+
+      {/* Mobile sidebar toggle */}
+      <button
+        onClick={toggleSidebar}
+        className="lg:hidden fixed bottom-4 right-4 z-50 w-12 h-12 rounded-full bg-brand-600 text-white shadow-lg flex items-center justify-center"
+        aria-label="Toggle navigation"
+      >
+        <Menu className="w-5 h-5" />
+      </button>
+    </div>
+  );
+}
