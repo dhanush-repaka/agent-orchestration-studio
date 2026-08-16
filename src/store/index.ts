@@ -9,6 +9,7 @@ import {
   INTEGRATIONS, EVALUATIONS, AUDIT_LOGS, USERS, CURRENT_USER,
 } from '@/data/mock';
 import { supabase } from '@/lib/supabase';
+import { syncPageToUrl } from '@/lib/routes';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -18,12 +19,17 @@ async function persistRun(run: WorkflowRun) {
 }
 
 export async function loadRunsFromDb(): Promise<WorkflowRun[]> {
-  const { data, error } = await supabase.from('workflow_runs').select('data');
-  if (error) {
-    console.error('Failed to load runs:', error.message);
+  try {
+    const { data, error } = await supabase.from('workflow_runs').select('data');
+    if (error) {
+      console.error('Failed to load runs:', error.message);
+      return [];
+    }
+    return (data ?? []).map((row) => row.data as WorkflowRun);
+  } catch (err) {
+    console.error('Failed to load runs:', err instanceof Error ? err.message : err);
     return [];
   }
-  return (data ?? []).map((row) => row.data as WorkflowRun);
 }
 
 async function persistAgent(agent: Agent) {
@@ -39,12 +45,17 @@ async function deleteAgentFromDb(id: string) {
 }
 
 export async function loadAgentsFromDb(): Promise<Agent[]> {
-  const { data, error } = await supabase.from('agents').select('data');
-  if (error) {
-    console.error('Failed to load agents:', error.message);
+  try {
+    const { data, error } = await supabase.from('agents').select('data');
+    if (error) {
+      console.error('Failed to load agents:', error.message);
+      return [];
+    }
+    return (data ?? []).map((row) => row.data as Agent);
+  } catch (err) {
+    console.error('Failed to load agents:', err instanceof Error ? err.message : err);
     return [];
   }
-  return (data ?? []).map((row) => row.data as Agent);
 }
 
 async function persistWorkflow(wf: Workflow) {
@@ -60,12 +71,17 @@ async function deleteWorkflowFromDb(id: string) {
 }
 
 export async function loadWorkflowsFromDb(): Promise<Workflow[]> {
-  const { data, error } = await supabase.from('workflows').select('data');
-  if (error) {
-    console.error('Failed to load workflows:', error.message);
+  try {
+    const { data, error } = await supabase.from('workflows').select('data');
+    if (error) {
+      console.error('Failed to load workflows:', error.message);
+      return [];
+    }
+    return (data ?? []).map((row) => row.data as Workflow);
+  } catch (err) {
+    console.error('Failed to load workflows:', err instanceof Error ? err.message : err);
     return [];
   }
-  return (data ?? []).map((row) => row.data as Workflow);
 }
 
 export type Page =
@@ -170,7 +186,10 @@ let approvalWait: { resolve: (ok: boolean) => void } | null = null;
 
 export const useStore = create<AppState>((set, get) => ({
   page: 'dashboard',
-  setPage: (p) => set({ page: p }),
+  setPage: (p) => {
+    set({ page: p });
+    syncPageToUrl(p);
+  },
   sidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   theme: 'light',

@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '@/store';
+import { pageFromPath } from '@/lib/routes';
 import { Layout } from '@/components/Layout';
 import { ToastContainer } from '@/components/Toast';
 import { DashboardPage } from '@/pages/DashboardPage';
@@ -29,6 +30,18 @@ function App() {
     hydrateWorkflows();
     hydrateRuns();
   }, [hydrateAgents, hydrateWorkflows, hydrateRuns]);
+
+  useEffect(() => {
+    const initial = pageFromPath(window.location.pathname);
+    if (useStore.getState().page !== initial) {
+      useStore.setState({ page: initial });
+    }
+    const onPopState = () => {
+      useStore.setState({ page: pageFromPath(window.location.pathname) });
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   const renderPage = () => {
     switch (page) {
