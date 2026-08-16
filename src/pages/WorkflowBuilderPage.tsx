@@ -11,6 +11,7 @@ import { StudioNode } from '@/components/StudioNode';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import { NodeInspector, WorkflowSettingsPanel, defaultNodeConfig } from '@/components/NodeInspector';
+import { sanitizeEdges } from '@/lib/graph';
 import {
   CONTROL_PALETTE, DATA_PALETTE, INTEGRATION_PALETTE,
   type WorkflowNodeData, type NodeKind, type WorkflowNode, type WorkflowEdge,
@@ -97,7 +98,7 @@ function BuilderInner() {
   useEffect(() => {
     if (wf) {
       const n = wf.nodes as unknown as Node[];
-      const e = wf.edges as unknown as Edge[];
+      const e = sanitizeEdges(n, wf.edges as unknown as Edge[]);
       setNodes(n);
       setEdges(e);
       setHistory([{ nodes: n, edges: e }]);
@@ -301,15 +302,17 @@ function BuilderInner() {
     reader.onload = () => {
       try {
         const data = JSON.parse(reader.result as string);
-        if (data.nodes) setNodes(data.nodes);
-        if (data.edges) setEdges(data.edges);
+        const importedNodes = (data.nodes ?? []) as Node[];
+        const importedEdges = sanitizeEdges(importedNodes, (data.edges ?? []) as Edge[]);
+        if (data.nodes) setNodes(importedNodes);
+        if (data.edges) setEdges(importedEdges);
         const cfgs: Record<string, NodeConfig> = {};
-        (data.nodes as Node[]).forEach((node) => {
+        importedNodes.forEach((node) => {
           const d = node.data as WorkflowNodeData;
           cfgs[node.id] = (d.config as unknown as NodeConfig) ?? defaultConfig();
         });
         setConfigs(cfgs);
-        pushHistory(data.nodes ?? nodes, data.edges ?? edges);
+        pushHistory(importedNodes, importedEdges);
         addToast('Workflow imported from file', 'success');
       } catch {
         addToast('Invalid JSON file', 'error');
@@ -404,7 +407,7 @@ function BuilderInner() {
   }
 
   const isRunning = runningWorkflowId === wf.id;
-  const agentPaletteItems: NodePaletteItem[] = agents.map((a) => ({
+  const agentPaletteItems: NodePaletteItem[] = agents.filter((a) => a.persisted !== false).map((a) => ({
     type: 'agent',
     label: a.displayName,
     kind: 'agent',
@@ -506,7 +509,7 @@ function BuilderInner() {
                 createAgent(created);
                 setSelectedAgent(created.id);
                 setPage('agent-config');
-                addToast('New agent created — configure it, then drop it on the canvas', 'success');
+                addToast('Untitled agent created — configure it, then drop it on the canvas', 'success');
               }}
               className="btn-secondary w-full mt-2 text-xs justify-center"
             >
@@ -603,6 +606,7 @@ function BuilderInner() {
             selectedNode={selectedNode}
             nodes={nodes}
             edges={edges}
+            workflowId={wf.id}
             onUpdate={updateNodeData}
             onDuplicate={duplicateNode}
             onDelete={deleteNode}

@@ -62,6 +62,10 @@ export function AgentConfigPage() {
     addToast('Agent configuration saved', 'success');
   };
 
+  const goBack = () => {
+    setPage('agents');
+  };
+
   const handleTest = async () => {
     setTestRunning(true);
     setTestResult(null);
@@ -135,7 +139,7 @@ export function AgentConfigPage() {
     <div className="h-full flex flex-col animate-fade-in">
       {/* Header */}
       <div className="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 flex items-center gap-4">
-        <button onClick={() => setPage('agents')} className="btn-ghost p-2"><ArrowLeft className="w-5 h-5" /></button>
+        <button onClick={goBack} className="btn-ghost p-2" aria-label="Back to agent library"><ArrowLeft className="w-5 h-5" /></button>
         <div className="flex items-center gap-2.5">
           <div className="w-10 h-10 rounded-lg bg-brand-50 dark:bg-brand-950 flex items-center justify-center">
             <Icon name={draft.icon} className="w-5 h-5 text-brand-600 dark:text-brand-400" />

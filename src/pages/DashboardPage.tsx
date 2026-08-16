@@ -158,8 +158,8 @@ export function DashboardPage() {
     }
 
     return {
-      totalAgents: agents.length,
-      activeWorkflows: workflows.filter((w) => w.published).length,
+      totalAgents: agents.filter((a) => a.persisted !== false).length,
+      activeWorkflows: workflows.length,
       runsTodayCount: runsToday.length,
       completedCount: completed.length,
       failedCount: failed.length,

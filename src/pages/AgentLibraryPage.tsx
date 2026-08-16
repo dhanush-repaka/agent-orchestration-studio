@@ -28,6 +28,7 @@ export function AgentLibraryPage() {
   const owners = Array.from(new Set(agents.map((a) => a.owner)));
 
   const filtered = agents.filter((a) => {
+    if (a.persisted === false) return false;
     if (search && !a.displayName.toLowerCase().includes(search.toLowerCase()) && !a.description.toLowerCase().includes(search.toLowerCase())) return false;
     if (filterType !== 'all' && a.type !== filterType) return false;
     if (filterStatus !== 'all' && a.status !== filterStatus) return false;
@@ -40,7 +41,7 @@ export function AgentLibraryPage() {
     createAgent(agent);
     setSelectedAgent(agent.id);
     setPage('agent-config');
-    addToast('New agent created — configure it now', 'success');
+    addToast('Untitled agent created — save to keep it in the library', 'success');
   };
 
   const handleEdit = (id: string) => {
@@ -70,7 +71,7 @@ export function AgentLibraryPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Agent Library</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">{agents.length} agents · Create, configure, and manage your AI agents</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">{agents.filter((a) => a.persisted !== false).length} agents · Create, configure, and manage your AI agents</p>
         </div>
         <button onClick={handleCreate} className="btn-primary">
           <Plus className="w-4 h-4" /> Create Agent

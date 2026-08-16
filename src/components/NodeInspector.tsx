@@ -2,13 +2,14 @@ import { useMemo, useState, useId, cloneElement, isValidElement, type ReactEleme
 import type { Node, Edge } from '@xyflow/react';
 import { useStore, newAgentSkeleton } from '@/store';
 import { Icon } from '@/components/Icon';
+import { StatusBadge } from '@/components/StatusBadge';
 import {
   PROMPT_VARIABLES,
   type Agent, type InputBinding, type NodeRuntimeConfig, type WorkflowNodeData,
 } from '@/types';
 import {
   Settings2, X, Copy, Trash2, Upload, Boxes, ExternalLink, Plus,
-  Bot, ArrowDownToLine, MessageSquareText, Cpu, Wrench, Timer,
+  Bot, ArrowDownToLine, MessageSquareText, Cpu, Wrench, Timer, ArrowRight,
 } from 'lucide-react';
 
 type Tab = 'agent' | 'io' | 'prompt' | 'model' | 'tools' | 'runtime';
@@ -35,13 +36,14 @@ interface Props {
   selectedNode: Node;
   nodes: Node[];
   edges: Edge[];
+  workflowId: string;
   onUpdate: (patch: Partial<WorkflowNodeData>) => void;
   onDuplicate: () => void;
   onDelete: () => void;
   onClose: () => void;
 }
 
-export function NodeInspector({ selectedNode, nodes, edges, onUpdate, onDuplicate, onDelete, onClose }: Props) {
+export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate, onDuplicate, onDelete, onClose }: Props) {
   const agents = useStore((s) => s.agents);
   const setPage = useStore((s) => s.setPage);
   const setSelectedAgent = useStore((s) => s.setSelectedAgent);
@@ -83,7 +85,7 @@ export function NodeInspector({ selectedNode, nodes, edges, onUpdate, onDuplicat
   };
 
   const handleCreateAgent = () => {
-    const created = newAgentSkeleton();
+    const created = { ...newAgentSkeleton(), persisted: true };
     createAgent(created);
     bindAgent(created.id);
     setSelectedAgent(created.id);
@@ -205,7 +207,14 @@ export function NodeInspector({ selectedNode, nodes, edges, onUpdate, onDuplicat
         )}
 
         {tab === 'runtime' && (
-          <RuntimeTab cfg={cfg} setCfg={setCfg} notes={data.notes ?? ''} onNotes={(notes) => onUpdate({ notes })} />
+          <RuntimeTab
+            cfg={cfg}
+            setCfg={setCfg}
+            notes={data.notes ?? ''}
+            onNotes={(notes) => onUpdate({ notes })}
+            nodeId={selectedNode.id}
+            workflowId={workflowId}
+          />
         )}
       </div>
 
@@ -477,15 +486,73 @@ function ToolsTab({ agent, cfg, setCfg }: { agent: Agent | undefined; cfg: NodeR
 }
 
 function RuntimeTab({
-  cfg, setCfg, notes, onNotes,
+  cfg, setCfg, notes, onNotes, nodeId, workflowId,
 }: {
   cfg: NodeRuntimeConfig;
   setCfg: (p: Partial<NodeRuntimeConfig>) => void;
   notes: string;
   onNotes: (n: string) => void;
+  nodeId: string;
+  workflowId: string;
 }) {
+  const runs = useStore((s) => s.runs);
+  const runningWorkflowId = useStore((s) => s.runningWorkflowId);
+  const runStatus = useStore((s) => s.runStatus);
+  const setPage = useStore((s) => s.setPage);
+  const setSelectedRun = useStore((s) => s.setSelectedRun);
+
+  const last = useMemo(() => {
+    const relevant = runs
+      .filter((r) => r.workflowId === workflowId)
+      .sort((a, b) => b.startTime.localeCompare(a.startTime));
+    for (const run of relevant) {
+      const exec = run.nodeExecutions?.find((ne) => ne.nodeId === nodeId);
+      if (exec) return { run, exec };
+    }
+    return null;
+  }, [runs, workflowId, nodeId]);
+
+  const liveStatus = runningWorkflowId === workflowId ? runStatus[nodeId] : undefined;
+
   return (
     <div className="space-y-3">
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Last run</p>
+          {liveStatus && <StatusBadge status={liveStatus} />}
+        </div>
+        {!last && !liveStatus && (
+          <p className="text-xs text-slate-400">No execution yet. Run this workflow to see input and output here.</p>
+        )}
+        {last && (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <StatusBadge status={last.exec.status} />
+              <span className="text-[11px] text-slate-400">
+                {(last.exec.executionTimeMs / 1000).toFixed(1)}s · {last.exec.tokenUsage.toLocaleString()} tokens
+              </span>
+            </div>
+            {last.exec.error && (
+              <p className="text-[11px] font-mono text-red-600 dark:text-red-400 whitespace-pre-wrap">{last.exec.error}</p>
+            )}
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Input</p>
+              <pre className="text-[11px] font-mono text-slate-600 dark:text-slate-300 whitespace-pre-wrap max-h-28 overflow-y-auto rounded bg-slate-50 dark:bg-slate-800/60 p-2">{last.exec.input || '—'}</pre>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Output</p>
+              <pre className="text-[11px] font-mono text-slate-600 dark:text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto rounded bg-slate-50 dark:bg-slate-800/60 p-2">{last.exec.output || '—'}</pre>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary text-xs w-full justify-center"
+              onClick={() => { setSelectedRun(last.run.id); setPage('run-details'); }}
+            >
+              View run details <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </>
+        )}
+      </div>
       <Field label="Timeout (s)">
         <input type="number" className="input" value={cfg.timeoutSec} onChange={(e) => setCfg({ timeoutSec: Number(e.target.value) })} />
       </Field>

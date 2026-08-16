@@ -66,13 +66,26 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const setEnvironment = useStore((s) => s.setEnvironment);
   const currentUser = useStore((s) => s.currentUser);
   const runs = useStore((s) => s.runs);
+  const agents = useStore((s) => s.agents);
+  const workflows = useStore((s) => s.workflows);
+  const setSelectedAgent = useStore((s) => s.setSelectedAgent);
+  const setSelectedWorkflow = useStore((s) => s.setSelectedWorkflow);
   const [headerMenu, setHeaderMenu] = useState<'notifications' | 'help' | null>(null);
+  const [search, setSearch] = useState('');
 
   const recentNotes = runs.slice(0, 5).map((r) => ({
     id: r.id,
     title: `${r.workflowName} ${r.status}`,
     detail: r.startTime?.slice(0, 16) ?? r.id,
   }));
+
+  const searchQ = search.trim().toLowerCase();
+  const agentHits = searchQ
+    ? agents.filter((a) => a.persisted !== false && (a.displayName.toLowerCase().includes(searchQ) || a.type.toLowerCase().includes(searchQ))).slice(0, 6)
+    : [];
+  const workflowHits = searchQ
+    ? workflows.filter((w) => w.name.toLowerCase().includes(searchQ) || w.description.toLowerCase().includes(searchQ)).slice(0, 6)
+    : [];
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -121,8 +134,40 @@ export function Layout({ children }: { children: React.ReactNode }) {
             type="search"
             placeholder="Search agents, workflows..."
             aria-label="Search agents and workflows"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onFocus={() => setHeaderMenu(null)}
             className="w-full pl-9 pr-3 py-1.5 text-sm rounded-lg bg-slate-100 dark:bg-slate-800 border border-transparent focus:border-brand-400 focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-brand-400 transition"
           />
+          {searchQ && (
+            <div className="absolute top-full mt-1 left-0 right-0 card p-1 max-h-80 overflow-y-auto z-30">
+              {agentHits.length === 0 && workflowHits.length === 0 && (
+                <p className="px-3 py-2 text-xs text-slate-400">No matches</p>
+              )}
+              {agentHits.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  className="w-full text-left px-3 py-2 rounded-md hover:bg-slate-50 dark:hover:bg-slate-800"
+                  onClick={() => { setSelectedAgent(a.id); setPage('agent-config'); setSearch(''); }}
+                >
+                  <p className="text-xs font-medium text-slate-800 dark:text-slate-100">{a.displayName}</p>
+                  <p className="text-[11px] text-slate-400">Agent · {a.type}</p>
+                </button>
+              ))}
+              {workflowHits.map((w) => (
+                <button
+                  key={w.id}
+                  type="button"
+                  className="w-full text-left px-3 py-2 rounded-md hover:bg-slate-50 dark:hover:bg-slate-800"
+                  onClick={() => { setSelectedWorkflow(w.id); setPage('workflow-builder'); setSearch(''); }}
+                >
+                  <p className="text-xs font-medium text-slate-800 dark:text-slate-100">{w.name}</p>
+                  <p className="text-[11px] text-slate-400">Workflow</p>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Actions */}

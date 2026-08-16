@@ -191,6 +191,8 @@ export interface Agent {
   workflowsUsing: number;
   createdAt: string;
   updatedAt: string;
+  /** False until the first Save. Unsaved drafts stay in memory only. */
+  persisted?: boolean;
 }
 
 export type NodeKind = 'agent' | 'control' | 'data' | 'integration';

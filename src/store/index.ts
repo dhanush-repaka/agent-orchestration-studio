@@ -10,6 +10,7 @@ import {
 } from '@/data/mock';
 import { supabase } from '@/lib/supabase';
 import { syncPageToUrl, pageFromPath } from '@/lib/routes';
+import { sanitizeWorkflowGraph } from '@/lib/graph';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -42,6 +43,17 @@ async function persistAgent(agent: Agent) {
 async function deleteAgentFromDb(id: string) {
   const { error } = await supabase.from('agents').delete().eq('id', id);
   if (error) console.error('Failed to delete agent:', error.message);
+}
+
+function isUntitledSkeleton(a: Agent): boolean {
+  return (
+    a.name === 'new-agent' &&
+    (a.displayName === 'New Agent' || !a.displayName?.trim()) &&
+    !a.description?.trim() &&
+    !a.prompt?.systemPrompt?.trim() &&
+    !a.prompt?.userPromptTemplate?.trim() &&
+    (a.inputs?.length ?? 0) === 0
+  );
 }
 
 export async function loadAgentsFromDb(): Promise<Agent[]> {
@@ -187,6 +199,20 @@ let approvalWait: { resolve: (ok: boolean) => void } | null = null;
 export const useStore = create<AppState>((set, get) => ({
   page: typeof window !== 'undefined' ? pageFromPath(window.location.pathname) : 'dashboard',
   setPage: (p) => {
+    const s = get();
+    if (s.page === 'agent-config' && p !== 'agent-config') {
+      const agent = s.agents.find((a) => a.id === s.selectedAgentId);
+      if (agent?.persisted === false) {
+        deleteAgentFromDb(agent.id);
+        set({
+          page: p,
+          agents: s.agents.filter((a) => a.id !== agent.id),
+          selectedAgentId: s.selectedAgentId === agent.id ? null : s.selectedAgentId,
+        });
+        syncPageToUrl(p);
+        return;
+      }
+    }
     set({ page: p });
     syncPageToUrl(p);
   },
@@ -222,12 +248,13 @@ export const useStore = create<AppState>((set, get) => ({
   setSelectedRun: (id) => set({ selectedRunId: id }),
 
   createAgent: (agent) => {
-    set((s) => ({ agents: [agent, ...s.agents] }));
-    persistAgent(agent);
+    const next = { ...agent, persisted: agent.persisted ?? false };
+    set((s) => ({ agents: [next, ...s.agents] }));
+    if (next.persisted !== false) persistAgent({ ...next, persisted: true });
   },
   updateAgent: (id, patch) => {
     set((s) => ({
-      agents: s.agents.map((a) => (a.id === id ? { ...a, ...patch, updatedAt: new Date().toISOString() } : a)),
+      agents: s.agents.map((a) => (a.id === id ? { ...a, ...patch, persisted: true, updatedAt: new Date().toISOString() } : a)),
     }));
     const updated = get().agents.find((a) => a.id === id);
     if (updated) persistAgent(updated);
@@ -248,6 +275,7 @@ export const useStore = create<AppState>((set, get) => ({
       status: 'draft',
       version: '0.1.0',
       workflowsUsing: 0,
+      persisted: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -297,11 +325,18 @@ export const useStore = create<AppState>((set, get) => ({
     get().addToast(`Cloned workflow: ${wf.name}`, 'success');
   },
   setWorkflowGraph: (id, nodes, edges) => {
+    const cleanEdges = sanitizeWorkflowGraph(nodes, edges);
+    const boundIds = new Set(nodes.map((n) => n.data.agentId).filter(Boolean) as string[]);
+    const unsavedBound = get().agents.filter((a) => boundIds.has(a.id) && a.persisted === false);
     set((s) => ({
-      workflows: s.workflows.map((w) => (w.id === id ? { ...w, nodes, edges, updatedAt: new Date().toISOString() } : w)),
+      agents: unsavedBound.length
+        ? s.agents.map((a) => (boundIds.has(a.id) && a.persisted === false ? { ...a, persisted: true } : a))
+        : s.agents,
+      workflows: s.workflows.map((w) => (w.id === id ? { ...w, nodes, edges: cleanEdges, updatedAt: new Date().toISOString() } : w)),
     }));
     const updated = get().workflows.find((w) => w.id === id);
     if (updated) persistWorkflow(updated);
+    unsavedBound.forEach((a) => persistAgent({ ...a, persisted: true }));
   },
 
   runningWorkflowId: null,
@@ -384,9 +419,13 @@ export const useStore = create<AppState>((set, get) => ({
   hydrateAgents: async () => {
     const dbAgents = await loadAgentsFromDb();
     if (dbAgents.length === 0) return;
+    const leftovers = dbAgents.filter(isUntitledSkeleton);
+    leftovers.forEach((a) => { void deleteAgentFromDb(a.id); });
+    const kept = dbAgents.filter((a) => !isUntitledSkeleton(a));
     set((s) => {
       const byId = new Map(s.agents.map((a) => [a.id, a]));
-      for (const a of dbAgents) byId.set(a.id, a);
+      for (const a of kept) byId.set(a.id, a);
+      leftovers.forEach((a) => byId.delete(a.id));
       return { agents: Array.from(byId.values()) };
     });
   },
@@ -395,7 +434,9 @@ export const useStore = create<AppState>((set, get) => ({
     if (dbWorkflows.length === 0) return;
     set((s) => {
       const byId = new Map(s.workflows.map((w) => [w.id, w]));
-      for (const w of dbWorkflows) byId.set(w.id, w);
+      for (const w of dbWorkflows) {
+        byId.set(w.id, { ...w, edges: sanitizeWorkflowGraph(w.nodes ?? [], w.edges ?? []) });
+      }
       return { workflows: Array.from(byId.values()) };
     });
   },
@@ -412,10 +453,11 @@ export const useStore = create<AppState>((set, get) => ({
 
 // Helper: generate a new agent skeleton
 export function newAgentSkeleton(): Agent {
+  const idNum = ++agentIdCounter;
   return {
-    id: `a${++agentIdCounter}`,
-    name: 'new-agent',
-    displayName: 'New Agent',
+    id: `a${idNum}`,
+    name: `untitled-agent-${idNum}`,
+    displayName: 'Untitled Agent',
     description: '',
     icon: 'Bot',
     type: 'Custom',
@@ -454,6 +496,7 @@ export function newAgentSkeleton(): Agent {
     workflowsUsing: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    persisted: false,
   };
 }
 
