@@ -9,7 +9,7 @@ import {
   INTEGRATIONS, EVALUATIONS, AUDIT_LOGS, USERS, CURRENT_USER,
 } from '@/data/mock';
 import { supabase } from '@/lib/supabase';
-import { syncPageToUrl } from '@/lib/routes';
+import { syncPageToUrl, pageFromPath } from '@/lib/routes';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -185,7 +185,7 @@ let runGeneration = 0;
 let approvalWait: { resolve: (ok: boolean) => void } | null = null;
 
 export const useStore = create<AppState>((set, get) => ({
-  page: 'dashboard',
+  page: typeof window !== 'undefined' ? pageFromPath(window.location.pathname) : 'dashboard',
   setPage: (p) => {
     set({ page: p });
     syncPageToUrl(p);
