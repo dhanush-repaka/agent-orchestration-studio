@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useStore, type Page } from '@/store';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -64,6 +65,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const environment = useStore((s) => s.environment);
   const setEnvironment = useStore((s) => s.setEnvironment);
   const currentUser = useStore((s) => s.currentUser);
+  const runs = useStore((s) => s.runs);
+  const [headerMenu, setHeaderMenu] = useState<'notifications' | 'help' | null>(null);
+
+  const recentNotes = runs.slice(0, 5).map((r) => ({
+    id: r.id,
+    title: `${r.workflowName} ${r.status}`,
+    detail: r.startTime?.slice(0, 16) ?? r.id,
+  }));
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -95,6 +104,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <select
             value={environment}
             onChange={(e) => setEnvironment(e.target.value as Environment)}
+            aria-label="Environment"
             className={`appearance-none pl-3 pr-8 py-1.5 rounded-lg text-xs font-semibold border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 ${ENV_COLORS[environment]}`}
           >
             {ENVIRONMENTS.map((e) => (
@@ -108,21 +118,69 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="relative hidden md:block w-48 lg:w-64">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
-            type="text"
+            type="search"
             placeholder="Search agents, workflows..."
+            aria-label="Search agents and workflows"
             className="w-full pl-9 pr-3 py-1.5 text-sm rounded-lg bg-slate-100 dark:bg-slate-800 border border-transparent focus:border-brand-400 focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-brand-400 transition"
           />
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-1 ml-auto md:ml-2">
-          <button className="btn-ghost p-2 relative" aria-label="Notifications">
+        <div className="flex items-center gap-1 ml-auto md:ml-2 relative">
+          <button
+            className="btn-ghost p-2 relative"
+            aria-label="Notifications"
+            aria-expanded={headerMenu === 'notifications'}
+            onClick={() => setHeaderMenu((m) => (m === 'notifications' ? null : 'notifications'))}
+          >
             <Bell className="w-5 h-5" />
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />
+            {runs.some((r) => r.status === 'running' || r.status === 'waiting-approval' || r.status === 'paused') && (
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />
+            )}
           </button>
-          <button className="btn-ghost p-2" aria-label="Help">
+          <button
+            className="btn-ghost p-2"
+            aria-label="Help"
+            aria-expanded={headerMenu === 'help'}
+            onClick={() => setHeaderMenu((m) => (m === 'help' ? null : 'help'))}
+          >
             <HelpCircle className="w-5 h-5" />
           </button>
+          {headerMenu === 'notifications' && (
+            <div className="absolute right-16 top-11 w-80 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-50 p-3">
+              <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">Notifications</p>
+              {recentNotes.length === 0 ? (
+                <p className="text-xs text-slate-500">No recent run activity.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {recentNotes.map((n) => (
+                    <li key={n.id} className="text-xs text-slate-600 dark:text-slate-300">
+                      <span className="font-medium text-slate-800 dark:text-slate-100">{n.title}</span>
+                      <span className="block text-[11px] text-slate-400">{n.detail}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {headerMenu === 'help' && (
+            <div className="absolute right-8 top-11 w-80 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-50 p-3">
+              <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">Help</p>
+              <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-1.5">
+                <li>Build agents in Agent Library, then drop them on the Workflow Builder canvas.</li>
+                <li>Connect Start → agents → End, then click Run Workflow.</li>
+                <li>Keyboard: Ctrl+S saves the open workflow. Ctrl+Z undoes canvas edits.</li>
+                <li>
+                  <button
+                    className="text-brand-600 dark:text-brand-400 hover:underline"
+                    onClick={() => { setPage('workflow-builder'); setHeaderMenu(null); }}
+                  >
+                    Open Workflow Builder
+                  </button>
+                </li>
+              </ul>
+            </div>
+          )}
           <button onClick={toggleTheme} className="btn-ghost p-2" aria-label="Toggle theme">
             {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
           </button>
