@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useStore } from '@/store';
-import { supabase } from '@/lib/supabase';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import {
@@ -72,23 +71,59 @@ export function AgentConfigPage() {
       try {
         parsedInput = JSON.parse(testInput);
       } catch {
-        throw new Error('Sample input is not valid JSON. Expected: { "workItemId": 21 }');
+        throw new Error('Sample input is not valid JSON.');
       }
-      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ado-retrieval`;
+      const interpolateTemplate = (template: string) =>
+        template
+          .replace(/\{\{user_input\}\}/g, JSON.stringify(parsedInput, null, 2))
+          .replace(/\{\{workflow_input\}\}/g, JSON.stringify(parsedInput, null, 2))
+          .replace(/\{\{previous_agent_output\}\}/g, JSON.stringify(parsedInput, null, 2))
+          .replace(/\{\{current_date\}\}/g, new Date().toISOString())
+          .replace(/\{\{environment\}\}/g, draft.environment);
+
+      if (draft.type === 'Data Retrieval') {
+        const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ado-retrieval`;
+        const fnRes = await fetch(fnUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({ workItemId: Number(parsedInput.workItemId) }),
+        });
+        const fnData = await fnRes.json().catch(() => ({}));
+        if (!fnRes.ok) throw new Error(fnData.error || fnData.details || `Edge Function returned ${fnRes.status}`);
+        if (fnData?.error) throw new Error(fnData.error);
+        setTestResult(JSON.stringify(fnData, null, 2));
+        return;
+      }
+
+      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/agent-processor`;
       const fnRes = await fetch(fnUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
         },
-        body: JSON.stringify({ workItemId: Number(parsedInput.workItemId) }),
+        body: JSON.stringify({
+          agentType: draft.type,
+          displayName: draft.displayName,
+          systemPrompt: draft.prompt.systemPrompt,
+          userPrompt: interpolateTemplate(draft.prompt.userPromptTemplate),
+          outputInstructions: draft.prompt.outputInstructions,
+          outputFormat: draft.output.format,
+          jsonSchema: draft.output.jsonSchema,
+          temperature: draft.temperature,
+          maxTokens: draft.maxTokens,
+          modelName: draft.modelName,
+          upstreamData: { testInput: parsedInput },
+          resolvedInputs: parsedInput,
+          workflowInput: parsedInput,
+        }),
       });
       const fnData = await fnRes.json().catch(() => ({}));
-      if (!fnRes.ok) {
-        throw new Error(fnData.error || fnData.details || `Edge Function returned ${fnRes.status} ${fnRes.statusText}`);
-      }
-      if (fnData?.error) throw new Error(fnData.error);
-      setTestResult(JSON.stringify(fnData, null, 2));
+      if (!fnRes.ok) throw new Error(fnData.error || `Agent processor returned ${fnRes.status}`);
+      setTestResult(JSON.stringify(fnData.result ?? fnData, null, 2));
     } catch (err) {
       setTestError(err instanceof Error ? err.message : 'Test failed');
     } finally {

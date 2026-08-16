@@ -8,7 +8,9 @@ const corsHeaders = {
 };
 
 interface RetrieveRequest {
-  workItemId: number;
+  workItemId: number | string;
+  adoOrg?: string;
+  adoApiVersion?: string;
 }
 
 Deno.serve(async (req: Request) => {
@@ -17,19 +19,21 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { workItemId } = (await req.json()) as RetrieveRequest;
-    if (!workItemId || typeof workItemId !== "number") {
+    const body = (await req.json()) as RetrieveRequest;
+    const { workItemId } = body;
+    const parsedId = typeof workItemId === "number" ? workItemId : Number(workItemId);
+    if (!workItemId || Number.isNaN(parsedId)) {
       return new Response(
         JSON.stringify({ error: "workItemId (number) is required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const adoOrg = Deno.env.get("ADO_ORG");
+    const adoOrg = (body.adoOrg && String(body.adoOrg).trim()) || Deno.env.get("ADO_ORG");
     const llmApiKey = Deno.env.get("LLM_API_KEY");
     const llmBaseUrl = (Deno.env.get("LLM_BASE_URL") ?? "https://api.openai.com/v1").replace(/\/$/, "");
     const llmModel = "gpt-4o-mini";
-    const apiVersion = Deno.env.get("ADO_API_VERSION") ?? "7.0";
+    const apiVersion = (body.adoApiVersion && String(body.adoApiVersion).trim()) || Deno.env.get("ADO_API_VERSION") || "7.0";
 
     if (!adoOrg) {
       return new Response(
@@ -76,7 +80,7 @@ Deno.serve(async (req: Request) => {
       cleanOrg = afterDomain[0] ?? "";
     }
     cleanOrg = cleanOrg.replace(/[^a-zA-Z0-9_-]/g, "");
-    const cleanId = parseInt(String(workItemId), 10);
+    const cleanId = parseInt(String(parsedId), 10);
     if (isNaN(cleanId)) {
       return new Response(
         JSON.stringify({ error: `Invalid work item ID: ${workItemId}` }),

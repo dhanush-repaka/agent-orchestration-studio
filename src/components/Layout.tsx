@@ -9,20 +9,40 @@ import {
 } from 'lucide-react';
 import type { Environment } from '@/types';
 
-const NAV_ITEMS: { id: Page; label: string; icon: typeof LayoutDashboard }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'agents', label: 'Agent Library', icon: Bot },
-  { id: 'workflow-builder', label: 'Workflow Builder', icon: Workflow },
-  { id: 'workflow-runs', label: 'Workflow Runs', icon: PlayCircle },
-  { id: 'tools', label: 'Tools & Integrations', icon: Plug },
-  { id: 'prompts', label: 'Prompt Library', icon: MessageSquareText },
-  { id: 'knowledge', label: 'Knowledge Sources', icon: BookOpen },
-  { id: 'models', label: 'Models', icon: Cpu },
-  { id: 'credentials', label: 'Credentials', icon: KeyRound },
-  { id: 'evaluations', label: 'Evaluations', icon: ClipboardCheck },
-  { id: 'monitoring', label: 'Monitoring', icon: Activity },
-  { id: 'audit', label: 'Audit Logs', icon: ScrollText },
-  { id: 'settings', label: 'Settings', icon: Settings },
+const NAV_GROUPS: { title: string; items: { id: Page; label: string; icon: typeof LayoutDashboard }[] }[] = [
+  {
+    title: 'Build',
+    items: [
+      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { id: 'agents', label: 'Agent Library', icon: Bot },
+      { id: 'workflow-builder', label: 'Workflow Builder', icon: Workflow },
+    ],
+  },
+  {
+    title: 'Operate',
+    items: [
+      { id: 'workflow-runs', label: 'Workflow Runs', icon: PlayCircle },
+      { id: 'monitoring', label: 'Monitoring', icon: Activity },
+    ],
+  },
+  {
+    title: 'Resources',
+    items: [
+      { id: 'tools', label: 'Tools & Integrations', icon: Plug },
+      { id: 'prompts', label: 'Prompt Library', icon: MessageSquareText },
+      { id: 'knowledge', label: 'Knowledge Sources', icon: BookOpen },
+      { id: 'models', label: 'Models', icon: Cpu },
+      { id: 'credentials', label: 'Credentials', icon: KeyRound },
+    ],
+  },
+  {
+    title: 'Govern',
+    items: [
+      { id: 'evaluations', label: 'Evaluations', icon: ClipboardCheck },
+      { id: 'audit', label: 'Audit Logs', icon: ScrollText },
+      { id: 'settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ];
 
 const ENVIRONMENTS: Environment[] = ['development', 'qa', 'uat', 'production'];
@@ -122,21 +142,30 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside className={`shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 transition-all duration-200 overflow-y-auto ${collapsed ? 'w-16' : 'w-60'}`}>
-          <nav className="p-2 space-y-0.5">
-            {NAV_ITEMS.map((item) => {
-              const active = page === item.id || (item.id === 'agents' && page === 'agent-config') || (item.id === 'workflow-runs' && page === 'run-details');
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => setPage(item.id)}
-                  className={`nav-item w-full ${active ? 'nav-item-active' : 'nav-item-inactive'} ${collapsed ? 'justify-center' : ''}`}
-                  title={collapsed ? item.label : undefined}
-                >
-                  <item.icon className="w-[18px] h-[18px] shrink-0" />
-                  {!collapsed && <span className="truncate">{item.label}</span>}
-                </button>
-              );
-            })}
+          <nav className="p-2 space-y-3">
+            {NAV_GROUPS.map((group) => (
+              <div key={group.title}>
+                {!collapsed && (
+                  <p className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{group.title}</p>
+                )}
+                <div className="space-y-0.5">
+                  {group.items.map((item) => {
+                    const active = page === item.id || (item.id === 'agents' && page === 'agent-config') || (item.id === 'workflow-runs' && page === 'run-details');
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => setPage(item.id)}
+                        className={`nav-item w-full ${active ? 'nav-item-active' : 'nav-item-inactive'} ${collapsed ? 'justify-center' : ''}`}
+                        title={collapsed ? item.label : undefined}
+                      >
+                        <item.icon className="w-[18px] h-[18px] shrink-0" />
+                        {!collapsed && <span className="truncate">{item.label}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </nav>
           {!collapsed && (
             <div className="p-3 mt-2">

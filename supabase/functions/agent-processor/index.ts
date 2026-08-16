@@ -21,12 +21,14 @@ async function callLlm(
   messages: { role: string; content: string }[],
   temperature: number,
   maxTokens: number,
+  requestedModel?: string,
 ): Promise<{ llmJson: Record<string, unknown> | null; usedModel: string; error: string | null }> {
   const envModel = Deno.env.get("LLM_MODEL");
-  const models = [resolveModel(envModel)];
-  if (envModel && !VALID_MODELS.includes(envModel)) {
-    models.push(FALLBACK_MODEL);
-  }
+  const preferred = requestedModel && VALID_MODELS.includes(requestedModel)
+    ? requestedModel
+    : resolveModel(envModel);
+  const models = [preferred];
+  if (preferred !== FALLBACK_MODEL) models.push(FALLBACK_MODEL);
 
   for (const model of models) {
     try {
@@ -58,8 +60,20 @@ async function callLlm(
 
 interface AgentProcessorRequest {
   agentType: string;
+  displayName?: string;
+  systemPrompt?: string;
+  userPrompt?: string;
+  outputInstructions?: string;
+  outputFormat?: string;
+  jsonSchema?: string;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  modelName?: string;
   upstreamData: Record<string, unknown>;
+  resolvedInputs?: Record<string, unknown>;
   workflowName?: string;
+  workflowInput?: unknown;
 }
 
 const SYSTEM_PROMPTS: Record<string, string> = {
@@ -92,20 +106,17 @@ Deno.serve(async (req: Request) => {
   try {
     const body = (await req.json()) as AgentProcessorRequest;
 
-    if (!body || !body.agentType || !body.upstreamData) {
+    if (!body || !body.agentType) {
       return new Response(
-        JSON.stringify({ error: "agentType and upstreamData are required" }),
+        JSON.stringify({ error: "agentType is required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const systemPrompt = SYSTEM_PROMPTS[body.agentType];
-    if (!systemPrompt) {
-      return new Response(
-        JSON.stringify({ error: `Unsupported agent type: ${body.agentType}` }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
+    const upstreamData = body.upstreamData ?? {};
+    const systemPrompt = (body.systemPrompt ?? "").trim()
+      || SYSTEM_PROMPTS[body.agentType]
+      || `You are ${body.displayName || body.agentType}, an expert agent. Follow the user instructions exactly. If JSON is requested, return ONLY valid JSON with no markdown fences.`;
 
     const llmApiKey = Deno.env.get("LLM_API_KEY");
     const llmBaseUrl = (Deno.env.get("LLM_BASE_URL") ?? "https://api.openai.com/v1").replace(/\/$/, "");
@@ -117,16 +128,32 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const userPrompt = buildUserPrompt(body.agentType, body.upstreamData, body.workflowName);
-    const isCodeOutput = body.agentType === "Playwright Automation";
-    const isMarkdownOutput = body.agentType === "Report Generator";
+    let userPrompt = (body.userPrompt ?? "").trim();
+    if (!userPrompt) {
+      userPrompt = buildUserPrompt(body.agentType, upstreamData, body.workflowName);
+      if (body.resolvedInputs && Object.keys(body.resolvedInputs).length) {
+        userPrompt += `\n\nResolved node inputs:\n${JSON.stringify(body.resolvedInputs, null, 2)}`;
+      }
+    }
+    if (body.outputInstructions) {
+      userPrompt += `\n\nOutput instructions:\n${body.outputInstructions}`;
+    }
+    if (body.jsonSchema) {
+      userPrompt += `\n\nOutput JSON schema:\n${body.jsonSchema}`;
+    }
+
+    const format = (body.outputFormat ?? "").toLowerCase();
+    const isCodeOutput = body.agentType === "Playwright Automation" && format !== "json";
+    const isMarkdownOutput = format === "markdown" || (body.agentType === "Report Generator" && format !== "json");
     const messages = [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ];
 
-    const { llmJson, usedModel, error } = await callLlm(llmApiKey, llmBaseUrl, messages, 0.2, 4000);
-    if (error) {
+    const temperature = typeof body.temperature === "number" ? body.temperature : 0.2;
+    const maxTokens = typeof body.maxTokens === "number" ? body.maxTokens : 4000;
+    const { llmJson, usedModel, error } = await callLlm(llmApiKey, llmBaseUrl, messages, temperature, maxTokens, body.modelName);
+    if (error || !llmJson) {
       return new Response(
         JSON.stringify({ error }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },

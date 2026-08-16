@@ -204,13 +204,59 @@ export type NodeStatus =
   | 'waiting-approval'
   | 'skipped';
 
+export type BindingSource = 'workflow' | 'node' | 'static';
+
+export interface InputBinding {
+  inputName: string;
+  source: BindingSource;
+  /** JSON path into the source, e.g. "workItemId" or "normalized.title" */
+  path?: string;
+  /** When source is "node", the upstream node id. Empty = immediate predecessor. */
+  nodeId?: string;
+  staticValue?: string;
+}
+
+export interface NodeRuntimeConfig {
+  timeoutSec: number;
+  retryCount: number;
+  loggingLevel: 'debug' | 'info' | 'warning' | 'error';
+  inputMapping?: string;
+  outputMapping?: string;
+  inputBindings?: InputBinding[];
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  systemPromptOverride?: string;
+  userPromptOverride?: string;
+  enabledToolIds?: string[];
+  expression?: string;
+  duration?: number;
+  loopCount?: number;
+  loopPath?: string;
+  approver?: string;
+  adoOrg?: string;
+  adoProject?: string;
+  adoApiVersion?: string;
+  adoWorkItemType?: string;
+  adoTags?: string;
+  adoFields?: string;
+  workItemIdSource?: 'workflow-input' | 'previous-node' | 'static';
+  staticWorkItemId?: number;
+  linkToSource?: boolean;
+  priorityMap?: Record<string, number>;
+}
+
 export interface WorkflowNodeData extends Record<string, unknown> {
   kind: NodeKind;
-  nodeType: string; // e.g. "Start", "End", "Condition", agent type, etc.
+  nodeType: string;
   label: string;
   agentId?: string;
+  agentType?: AgentType;
+  icon?: string;
   status: NodeStatus;
-  config?: Record<string, unknown>;
+  config?: NodeRuntimeConfig | Record<string, unknown>;
   notes?: string;
 }
 
@@ -510,4 +556,5 @@ export const TRIGGER_TYPES: TriggerType[] = [
 export const PROMPT_VARIABLES = [
   '{{user_input}}', '{{workflow_input}}', '{{previous_agent_output}}',
   '{{knowledge_context}}', '{{current_date}}', '{{environment}}',
+  '{{inputs.name}}', '{{nodes.nodeId.output}}',
 ];

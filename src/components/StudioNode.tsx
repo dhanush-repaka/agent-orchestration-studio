@@ -27,22 +27,23 @@ function StudioNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as unknown as WorkflowNodeData;
   const status = nodeData.status;
   const style = getStatusStyle(status);
-  const iconName = NODE_ICONS[nodeData.nodeType] ?? nodeData.nodeType;
+  const iconName = nodeData.icon || NODE_ICONS[nodeData.nodeType] || nodeData.nodeType;
   const kindColor = KIND_COLORS[nodeData.kind] ?? KIND_COLORS.control;
   const isRunning = status === 'running';
   const isFailed = status === 'failed';
-  const notConfigured = status === 'not-configured';
+  const notConfigured = status === 'not-configured' || (nodeData.kind === 'agent' && !nodeData.agentId);
+  const subtitle = nodeData.kind === 'agent'
+    ? (nodeData.agentType || nodeData.nodeType)
+    : nodeData.nodeType;
 
   return (
     <div
-      className={`relative rounded-xl border-2 px-3 py-2.5 min-w-44 max-w-56 transition-all ${kindColor} ${selected ? 'ring-2 ring-brand-400 ring-offset-2 dark:ring-offset-slate-950' : ''} ${isRunning ? 'ring-2 ring-amber-400 animate-pulse-soft' : ''} ${isFailed ? 'ring-2 ring-red-400' : ''}`}
+      className={`relative rounded-xl border-2 px-3 py-2.5 min-w-48 max-w-60 transition-all ${kindColor} ${selected ? 'ring-2 ring-brand-400 ring-offset-2 dark:ring-offset-slate-950' : ''} ${isRunning ? 'ring-2 ring-amber-400 animate-pulse-soft' : ''} ${isFailed ? 'ring-2 ring-red-400' : ''}`}
     >
-      {/* Input handle */}
       {nodeData.nodeType !== 'start' && (
         <Handle type="target" position={Position.Left} className="w-3 h-3 bg-slate-400 dark:bg-slate-500 border-2 border-white dark:border-slate-900" />
       )}
 
-      {/* Output handles */}
       {nodeData.nodeType === 'condition' || nodeData.nodeType === 'switch' || nodeData.nodeType === 'router' ? (
         <>
           <Handle id="out-true" type="source" position={Position.Right} style={{ top: '30%' }} className="w-3 h-3 bg-emerald-500 border-2 border-white dark:border-slate-900" />
@@ -58,15 +59,14 @@ function StudioNodeComponent({ data, selected }: NodeProps) {
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">{nodeData.label}</p>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{nodeData.nodeType}</p>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{subtitle}</p>
         </div>
         {notConfigured && <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />}
       </div>
 
-      {/* Status indicator */}
       <div className="flex items-center gap-1 mt-1.5">
         <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
-        <span className={`text-[10px] ${style.text}`}>{style.label}</span>
+        <span className={`text-[10px] ${style.text}`}>{notConfigured && nodeData.kind === 'agent' && !nodeData.agentId ? 'Unbound' : style.label}</span>
       </div>
     </div>
   );

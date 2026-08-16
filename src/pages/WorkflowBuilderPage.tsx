@@ -1,24 +1,25 @@
-import { useCallback, useRef, useState, useEffect, useMemo } from 'react';
+import { useCallback, useRef, useState, useEffect } from 'react';
 import {
-  ReactFlow, ReactFlowProvider, Background, Controls, MiniMap,
+  ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, useReactFlow,
   addEdge, useNodesState, useEdgesState, type Connection, type Node,
   type Edge, BackgroundVariant, ConnectionMode, type NodeMouseHandler,
   type EdgeMouseHandler, type OnNodesChange, type OnEdgesChange,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useStore } from '@/store';
+import { useStore, newAgentSkeleton, newWorkflowSkeleton } from '@/store';
 import { StudioNode } from '@/components/StudioNode';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
+import { NodeInspector, WorkflowSettingsPanel, defaultNodeConfig } from '@/components/NodeInspector';
 import {
   CONTROL_PALETTE, DATA_PALETTE, INTEGRATION_PALETTE,
   type WorkflowNodeData, type NodeKind, type WorkflowNode, type WorkflowEdge,
-  type NodePaletteItem,
+  type NodePaletteItem, type NodeRuntimeConfig,
 } from '@/types';
 import {
   Play, Save, Download, Upload, Copy, Lock, Undo2, Redo2,
-  Trash2, Plus, X, Search, CheckCircle2, AlertCircle, AlertTriangle,
-  Settings2, UserCheck, MousePointerClick, Boxes,
+  Plus, X, Search, CheckCircle2, AlertCircle, AlertTriangle,
+  UserCheck, MousePointerClick,
 } from 'lucide-react';
 
 const nodeTypes = { studioNode: StudioNode };
@@ -47,16 +48,10 @@ const AGENT_ICONS: Record<string, string> = {
   'Custom': 'Bot',
 };
 
-interface NodeConfig {
-  timeoutSec: number;
-  retryCount: number;
-  loggingLevel: string;
-  inputMapping: string;
-  outputMapping: string;
-}
+interface NodeConfig extends NodeRuntimeConfig {}
 
 function defaultConfig(): NodeConfig {
-  return { timeoutSec: 60, retryCount: 2, loggingLevel: 'info', inputMapping: '', outputMapping: '' };
+  return defaultNodeConfig();
 }
 
 function BuilderInner() {
@@ -65,12 +60,21 @@ function BuilderInner() {
   const setSelectedWorkflow = useStore((s) => s.setSelectedWorkflow);
   const setWorkflowGraph = useStore((s) => s.setWorkflowGraph);
   const cloneWorkflow = useStore((s) => s.cloneWorkflow);
+  const createWorkflow = useStore((s) => s.createWorkflow);
+  const updateWorkflow = useStore((s) => s.updateWorkflow);
+  const createAgent = useStore((s) => s.createAgent);
+  const setSelectedAgent = useStore((s) => s.setSelectedAgent);
+  const setPage = useStore((s) => s.setPage);
   const addToast = useStore((s) => s.addToast);
   const startRun = useStore((s) => s.startRun);
   const cancelRun = useStore((s) => s.cancelRun);
+  const approveRun = useStore((s) => s.approveRun);
+  const rejectRun = useStore((s) => s.rejectRun);
+  const pendingApproval = useStore((s) => s.pendingApproval);
   const runningWorkflowId = useStore((s) => s.runningWorkflowId);
   const runStatus = useStore((s) => s.runStatus);
   const agents = useStore((s) => s.agents);
+  const { screenToFlowPosition } = useReactFlow();
 
   const wf = workflows.find((w) => w.id === selectedWorkflowId) ?? workflows[0];
 
@@ -160,10 +164,7 @@ function BuilderInner() {
     const raw = e.dataTransfer.getData('application/reactflow');
     if (!raw || !wf) return;
     const item = JSON.parse(raw) as NodePaletteItem;
-    const position = {
-      x: e.clientX - (reactFlowWrapper.current?.getBoundingClientRect().left ?? 0) - 80,
-      y: e.clientY - (reactFlowWrapper.current?.getBoundingClientRect().top ?? 0) - 20,
-    };
+    const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
     const matchingAgent = item.kind === 'agent'
       ? agents.find((a) => a.id === item.agentId)
       : undefined;
@@ -177,6 +178,7 @@ function BuilderInner() {
         label: matchingAgent?.displayName ?? item.label,
         agentType: matchingAgent?.type ?? item.agentType,
         agentId: matchingAgent?.id,
+        icon: matchingAgent?.icon ?? item.icon,
         status: item.kind === 'agent' ? (matchingAgent ? 'ready' : 'not-configured') : 'ready',
         config: defaultConfig(),
       } as WorkflowNodeData,
@@ -185,7 +187,7 @@ function BuilderInner() {
     setNodes(newNodes);
     setConfigs((c) => ({ ...c, [newNode.id]: defaultConfig() }));
     pushHistory(newNodes, edges);
-  }, [nodes, edges, wf, agents, setNodes, setConfigs, pushHistory]);
+  }, [nodes, edges, wf, agents, setNodes, setConfigs, pushHistory, screenToFlowPosition]);
 
   // Click-to-add from palette
   const addNodeFromPalette = useCallback((item: NodePaletteItem) => {
@@ -204,6 +206,7 @@ function BuilderInner() {
         label: matchingAgent?.displayName ?? item.label,
         agentType: matchingAgent?.type ?? item.agentType,
         agentId: matchingAgent?.id,
+        icon: matchingAgent?.icon ?? item.icon,
         status: item.kind === 'agent' ? (matchingAgent ? 'ready' : 'not-configured') : 'ready',
         config: defaultConfig(),
       } as WorkflowNodeData,
@@ -220,16 +223,10 @@ function BuilderInner() {
   const updateNodeData = useCallback((patch: Partial<WorkflowNodeData>) => {
     if (!selectedNodeId) return;
     setNodes((nds) => nds.map((n) => n.id === selectedNodeId ? { ...n, data: { ...n.data, ...patch } } : n));
+    if (patch.config) {
+      setConfigs((c) => ({ ...c, [selectedNodeId]: { ...defaultConfig(), ...(patch.config as NodeConfig) } }));
+    }
   }, [selectedNodeId, setNodes]);
-
-  const updateConfig = useCallback((patch: Partial<NodeConfig>) => {
-    if (!selectedNodeId) return;
-    setConfigs((c) => ({ ...c, [selectedNodeId]: { ...c[selectedNodeId], ...patch } }));
-    setNodes((nds) => nds.map((n) => {
-      if (n.id !== selectedNodeId) return n;
-      return { ...n, data: { ...n.data, config: { ...(n.data as WorkflowNodeData).config, ...patch } } };
-    }));
-  }, [selectedNodeId, setConfigs, setNodes]);
 
   const deleteNode = useCallback(() => {
     if (!selectedNodeId) return;
@@ -275,10 +272,10 @@ function BuilderInner() {
 
   const handleSave = useCallback(() => {
     if (!wf) return;
-    const nodesWithConfig = nodes.map((n) => ({
-      ...n,
-      data: { ...n.data, config: configs[n.id] ?? defaultConfig() },
-    }));
+    const nodesWithConfig = nodes.map((n) => {
+      const d = n.data as WorkflowNodeData;
+      return { ...n, data: { ...d, config: d.config ?? configs[n.id] ?? defaultConfig() } };
+    });
     setWorkflowGraph(wf.id, nodesWithConfig as unknown as WorkflowNode[], edges as unknown as WorkflowEdge[]);
     addToast('Workflow saved', 'success');
   }, [wf, nodes, edges, configs, setWorkflowGraph, addToast]);
@@ -329,6 +326,7 @@ function BuilderInner() {
       if (d.nodeType !== 'end' && !edges.find((e) => e.source === n.id)) errors.push(`Node "${d.label}" has no outgoing connection`);
       if (d.nodeType !== 'start' && !edges.find((e) => e.target === n.id)) errors.push(`Node "${d.label}" has no incoming connection`);
       if (d.status === 'not-configured') errors.push(`Node "${d.label}" is not configured`);
+      if (d.kind === 'agent' && !d.agentId) errors.push(`Node "${d.label}" has no agent bound`);
     });
     return errors;
   }, [nodes, edges]);
@@ -416,7 +414,6 @@ function BuilderInner() {
   }));
   const filteredPalette = (items: NodePaletteItem[]) => items.filter((i) => i.label.toLowerCase().includes(paletteSearch.toLowerCase()));
   const approvalNodes = nodes.filter((n) => (n.data as WorkflowNodeData).nodeType === 'approval');
-  const selectedConfig = selectedNodeId ? (configs[selectedNodeId] ?? defaultConfig()) : defaultConfig();
 
   return (
     <div className="h-full flex flex-col">
@@ -443,8 +440,21 @@ function BuilderInner() {
         <button onClick={handleExport} className="btn-secondary text-sm shrink-0"><Download className="w-4 h-4" /> Export</button>
         <button onClick={() => fileInputRef.current?.click()} className="btn-secondary text-sm shrink-0"><Upload className="w-4 h-4" /> Import</button>
         <input ref={fileInputRef} type="file" accept=".json" onChange={handleFileImport} className="hidden" />
+        <button onClick={() => {
+          const created = newWorkflowSkeleton();
+          createWorkflow(created);
+          setSelectedWorkflow(created.id);
+          addToast('New workflow created', 'success');
+        }} className="btn-ghost p-2 shrink-0" title="New workflow"><Plus className="w-4 h-4" /></button>
         <button onClick={() => cloneWorkflow(wf.id)} className="btn-ghost p-2 shrink-0" title="Clone"><Copy className="w-4 h-4" /></button>
         <div className="ml-auto flex items-center gap-2 shrink-0">
+          {pendingApproval && pendingApproval.workflowId === wf.id && (
+            <>
+              <span className="text-xs text-purple-600 dark:text-purple-300 truncate max-w-40">Approve: {pendingApproval.label}</span>
+              <button onClick={approveRun} className="btn-primary text-xs py-1.5"><UserCheck className="w-3.5 h-3.5" /> Approve</button>
+              <button onClick={rejectRun} className="btn-danger text-xs py-1.5">Reject</button>
+            </>
+          )}
           {validationErrors.length > 0 && (
             <span className="badge bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400">
               <AlertCircle className="w-3 h-3" /> {validationErrors.length} issues
@@ -488,6 +498,18 @@ function BuilderInner() {
             <p className="text-[10px] text-slate-400 mt-2 flex items-center gap-1">
               <MousePointerClick className="w-3 h-3" /> Click or drag to add
             </p>
+            <button
+              onClick={() => {
+                const created = newAgentSkeleton();
+                createAgent(created);
+                setSelectedAgent(created.id);
+                setPage('agent-config');
+                addToast('New agent created — configure it, then drop it on the canvas', 'success');
+              }}
+              className="btn-secondary w-full mt-2 text-xs justify-center"
+            >
+              <Plus className="w-3.5 h-3.5" /> New agent
+            </button>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-4">
             {[{ title: 'Agents', kind: 'agent' as NodeKind, items: agentPaletteItems }, ...STATIC_PALETTE_GROUPS].map((group) => {
@@ -558,7 +580,9 @@ function BuilderInner() {
           {isRunning && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 card px-4 py-2 flex items-center gap-2 bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-700">
               <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-              <span className="text-sm font-medium text-amber-700 dark:text-amber-300">Executing workflow...</span>
+              <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                {pendingApproval ? `Waiting for approval: ${pendingApproval.label}` : 'Executing workflow...'}
+              </span>
             </div>
           )}
 
@@ -572,392 +596,22 @@ function BuilderInner() {
           )}
         </div>
 
-        {/* Right properties panel — Node */}
         {selectedNode && (
-          <aside className="w-72 shrink-0 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col">
-            <div className="p-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Settings2 className="w-4 h-4 text-brand-600 dark:text-brand-400" />
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Node Properties</h3>
-              </div>
-              <button onClick={() => setSelectedNodeId(null)} className="btn-ghost p-1"><X className="w-4 h-4" /></button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div>
-                <label className="label">Node Name</label>
-                <input
-                  className="input"
-                  value={(selectedNode.data as WorkflowNodeData).label}
-                  onChange={(e) => updateNodeData({ label: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="label">Node Type</label>
-                <input className="input opacity-60" disabled value={(selectedNode.data as WorkflowNodeData).nodeType} />
-              </div>
-
-              {(selectedNode.data as WorkflowNodeData).kind === 'agent' && (
-                <>
-                  <div>
-                    <label className="label">Agent</label>
-                    <select
-                      className="input"
-                      value={(selectedNode.data as WorkflowNodeData).agentId ?? ''}
-                      onChange={(e) => {
-                        const ag = agents.find((a) => a.id === e.target.value);
-                        updateNodeData({ agentId: e.target.value, label: ag?.displayName ?? (selectedNode.data as WorkflowNodeData).label, status: 'ready' });
-                      }}
-                    >
-                      <option value="">Select agent...</option>
-                      {agents.map((a) => <option key={a.id} value={a.id}>{a.displayName}</option>)}
-                    </select>
-                  </div>
-                  {(() => {
-                    const ag = agents.find((a) => a.id === (selectedNode.data as WorkflowNodeData).agentId);
-                    if (!ag) return null;
-                    return (
-                      <div className="space-y-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3">
-                        <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Description</p>
-                          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{ag.description}</p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          <div>
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Model</p>
-                            <p className="text-slate-700 dark:text-slate-200">{ag.modelProvider} / {ag.modelName}</p>
-                          </div>
-                          <div>
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Temperature</p>
-                            <p className="text-slate-700 dark:text-slate-200">{ag.temperature}</p>
-                          </div>
-                          <div>
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Max Tokens</p>
-                            <p className="text-slate-700 dark:text-slate-200">{ag.maxTokens}</p>
-                          </div>
-                          <div>
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Environment</p>
-                            <p className="text-slate-700 dark:text-slate-200 capitalize">{ag.environment}</p>
-                          </div>
-                        </div>
-                        {ag.tools.length > 0 && (
-                          <div>
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Tools</p>
-                            <div className="space-y-1">
-                              {ag.tools.map((t) => (
-                                <div key={t.id} className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
-                                  <span className={`w-1.5 h-1.5 rounded-full ${t.enabled ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-                                  <span className="font-medium">{t.name}</span>
-                                  {t.permissionLevel && <span className="text-[10px] text-slate-400 capitalize">({t.permissionLevel})</span>}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {ag.inputs.length > 0 && (
-                          <div>
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Inputs</p>
-                            <div className="space-y-1">
-                              {ag.inputs.map((inp) => (
-                                <div key={inp.id} className="text-xs text-slate-600 dark:text-slate-300">
-                                  <span className="font-medium">{inp.name}</span>
-                                  <span className="text-slate-400"> · {inp.dataType}{inp.required ? ' · required' : ''}</span>
-                                  {inp.description && <p className="text-[11px] text-slate-400 mt-0.5">{inp.description}</p>}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Output Format</p>
-                          <p className="text-xs text-slate-600 dark:text-slate-300">
-                            {ag.output.format}
-                            {ag.output.requiredFields.length > 0 && <span className="text-slate-400"> · fields: {ag.output.requiredFields.join(', ')}</span>}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">System Prompt</p>
-                          <div className="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 max-h-32 overflow-y-auto">
-                            <p className="text-[11px] font-mono text-slate-600 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">{ag.prompt.systemPrompt}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 text-[11px] text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-700">
-                          <span>v{ag.version}</span>
-                          <span>·</span>
-                          <span>{ag.owner}</span>
-                          <span>·</span>
-                          <span className="capitalize">{ag.status}</span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </>
-              )}
-
-              {/* Agent-type-specific editable config */}
-              {(() => {
-                const d = selectedNode.data as WorkflowNodeData;
-                if (d.kind !== 'agent') return null;
-                const cfg = (d.config ?? {}) as Record<string, unknown>;
-                const setCfg = (key: string, value: unknown) => updateNodeData({ config: { ...cfg, [key]: value } });
-
-                // ADO Upload agent
-                if (d.nodeType === 'ADO Upload') {
-                  return (
-                    <div className="space-y-3 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50/50 dark:bg-brand-950/30 p-3">
-                      <p className="text-xs font-semibold text-brand-700 dark:text-brand-300 flex items-center gap-1.5"><Upload className="w-3.5 h-3.5" /> Azure DevOps Upload Settings</p>
-                      <div>
-                        <label className="label">ADO Organization</label>
-                        <input className="input text-xs" placeholder="e.g. myorg" value={(cfg.adoOrg as string) ?? ''} onChange={(e) => setCfg('adoOrg', e.target.value)} />
-                        <p className="text-[11px] text-slate-400 mt-1">Your Azure DevOps org name (from dev.azure.com/<b>org</b>)</p>
-                      </div>
-                      <div>
-                        <label className="label">ADO Project</label>
-                        <input className="input text-xs" placeholder="Auto-detected from source work item" value={(cfg.adoProject as string) ?? ''} onChange={(e) => setCfg('adoProject', e.target.value)} />
-                        <p className="text-[11px] text-slate-400 mt-1">Leave blank to auto-detect from the source work item's Area Path</p>
-                      </div>
-                      <div>
-                        <label className="label">API Version</label>
-                        <input className="input text-xs" placeholder="7.0" value={(cfg.adoApiVersion as string) ?? '7.0'} onChange={(e) => setCfg('adoApiVersion', e.target.value)} />
-                      </div>
-                      <div>
-                        <label className="label">Work Item Type</label>
-                        <select className="input text-xs" value={(cfg.adoWorkItemType as string) ?? 'Test Case'} onChange={(e) => setCfg('adoWorkItemType', e.target.value)}>
-                          <option value="Test Case">Test Case</option>
-                          <option value="Bug">Bug</option>
-                          <option value="Task">Task</option>
-                          <option value="User Story">User Story</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="label">Tags</label>
-                        <input className="input text-xs" placeholder="AI-Orchestration-Agent" value={(cfg.adoTags as string) ?? 'AI-Orchestration-Agent'} onChange={(e) => setCfg('adoTags', e.target.value)} />
-                        <p className="text-[11px] text-slate-400 mt-1">Comma-separated tags applied to each created work item</p>
-                      </div>
-                      <div>
-                        <label className="label">Priority Mapping</label>
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          {(['critical', 'high', 'medium', 'low'] as const).map((p) => (
-                            <div key={p} className="flex items-center gap-1.5">
-                              <span className="capitalize text-slate-500 w-16">{p}</span>
-                              <input type="number" min={1} max={4} className="input text-xs py-1" value={String((cfg.priorityMap as Record<string, number>)?.[p] ?? { critical: 1, high: 2, medium: 3, low: 4 }[p])} onChange={(e) => setCfg('priorityMap', { ...((cfg.priorityMap as Record<string, number>) ?? { critical: 1, high: 2, medium: 3, low: 4 }), [p]: Number(e.target.value) })} />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                        <input type="checkbox" className="rounded border-slate-300" checked={cfg.linkToSource !== false} onChange={(e) => setCfg('linkToSource', e.target.checked)} />
-                        Link test cases to source work item
-                      </label>
-                    </div>
-                  );
-                }
-
-                // Data Retrieval agent
-                if (d.nodeType === 'Data Retrieval') {
-                  return (
-                    <div className="space-y-3 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50/50 dark:bg-brand-950/30 p-3">
-                      <p className="text-xs font-semibold text-brand-700 dark:text-brand-300 flex items-center gap-1.5"><Boxes className="w-3.5 h-3.5" /> Azure DevOps Retrieval Settings</p>
-                      <div>
-                        <label className="label">ADO Organization</label>
-                        <input className="input text-xs" placeholder="e.g. myorg" value={(cfg.adoOrg as string) ?? ''} onChange={(e) => setCfg('adoOrg', e.target.value)} />
-                        <p className="text-[11px] text-slate-400 mt-1">Your Azure DevOps org name (from dev.azure.com/<b>org</b>)</p>
-                      </div>
-                      <div>
-                        <label className="label">API Version</label>
-                        <input className="input text-xs" placeholder="7.0" value={(cfg.adoApiVersion as string) ?? '7.0'} onChange={(e) => setCfg('adoApiVersion', e.target.value)} />
-                      </div>
-                      <div>
-                        <label className="label">Work Item ID Source</label>
-                        <select className="input text-xs" value={(cfg.workItemIdSource as string) ?? 'workflow-input'} onChange={(e) => setCfg('workItemIdSource', e.target.value)}>
-                          <option value="workflow-input">From workflow input</option>
-                          <option value="previous-node">From previous node output</option>
-                          <option value="static">Static value</option>
-                        </select>
-                        {cfg.workItemIdSource === 'static' && (
-                          <input className="input text-xs mt-2" type="number" placeholder="Enter work item ID" value={String(cfg.staticWorkItemId ?? '')} onChange={(e) => setCfg('staticWorkItemId', Number(e.target.value))} />
-                        )}
-                      </div>
-                      <div>
-                        <label className="label">Fields to Retrieve</label>
-                        <textarea className="input text-xs font-mono min-h-16" placeholder="System.Title, System.Description, System.State, Microsoft.VSTS.Common.AcceptanceCriteria" value={(cfg.adoFields as string) ?? ''} onChange={(e) => setCfg('adoFields', e.target.value)} />
-                        <p className="text-[11px] text-slate-400 mt-1">Comma-separated list of ADO fields to fetch. Leave blank for default set.</p>
-                      </div>
-                    </div>
-                  );
-                }
-
-                // Generic agent model settings (editable)
-                const ag = agents.find((a) => a.id === d.agentId);
-                if (!ag) return null;
-                return (
-                  <div className="space-y-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3">
-                    <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5"><Settings2 className="w-3.5 h-3.5" /> Model Settings</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="label">Temperature</label>
-                        <input type="number" step="0.1" min={0} max={2} className="input text-xs" value={String((cfg.temperature as number) ?? ag.temperature)} onChange={(e) => setCfg('temperature', Number(e.target.value))} />
-                      </div>
-                      <div>
-                        <label className="label">Max Tokens</label>
-                        <input type="number" className="input text-xs" value={String((cfg.maxTokens as number) ?? ag.maxTokens)} onChange={(e) => setCfg('maxTokens', Number(e.target.value))} />
-                      </div>
-                      <div>
-                        <label className="label">Top P</label>
-                        <input type="number" step="0.05" min={0} max={1} className="input text-xs" value={String((cfg.topP as number) ?? ag.topP)} onChange={(e) => setCfg('topP', Number(e.target.value))} />
-                      </div>
-                      <div>
-                        <label className="label">Freq. Penalty</label>
-                        <input type="number" step="0.1" min={-2} max={2} className="input text-xs" value={String((cfg.frequencyPenalty as number) ?? ag.frequencyPenalty)} onChange={(e) => setCfg('frequencyPenalty', Number(e.target.value))} />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div>
-                <label className="label">Status</label>
-                <select
-                  className="input"
-                  value={(selectedNode.data as WorkflowNodeData).status}
-                  onChange={(e) => updateNodeData({ status: e.target.value as WorkflowNodeData['status'] })}
-                >
-                  <option value="not-configured">Not Configured</option>
-                  <option value="ready">Ready</option>
-                  <option value="completed">Completed</option>
-                  <option value="failed">Failed</option>
-                  <option value="skipped">Skipped</option>
-                </select>
-              </div>
-
-              {(selectedNode.data as WorkflowNodeData).nodeType === 'condition' && (
-                <div>
-                  <label className="label">Condition Expression</label>
-                  <input
-                    className="input font-mono text-xs"
-                    placeholder="{{nodes.X.output.qualityScore}} >= 70"
-                    value={((selectedNode.data as WorkflowNodeData).config?.expression as string) ?? ''}
-                    onChange={(e) => updateNodeData({ config: { ...(selectedNode.data as WorkflowNodeData).config, expression: e.target.value } })}
-                  />
-                  <p className="text-[11px] text-slate-400 mt-1">True → top output, False → bottom output</p>
-                </div>
-              )}
-
-              {(selectedNode.data as WorkflowNodeData).nodeType === 'wait' && (
-                <div>
-                  <label className="label">Wait Duration (ms)</label>
-                  <input
-                    type="number"
-                    className="input"
-                    value={((selectedNode.data as WorkflowNodeData).config?.duration as number) ?? 5000}
-                    onChange={(e) => updateNodeData({ config: { ...(selectedNode.data as WorkflowNodeData).config, duration: Number(e.target.value) } })}
-                  />
-                </div>
-              )}
-
-              {(selectedNode.data as WorkflowNodeData).nodeType === 'loop' && (
-                <div>
-                  <label className="label">Loop Count</label>
-                  <input
-                    type="number"
-                    className="input"
-                    value={((selectedNode.data as WorkflowNodeData).config?.loopCount as number) ?? 3}
-                    onChange={(e) => updateNodeData({ config: { ...(selectedNode.data as WorkflowNodeData).config, loopCount: Number(e.target.value) } })}
-                  />
-                </div>
-              )}
-
-              {(selectedNode.data as WorkflowNodeData).nodeType === 'approval' && (
-                <div>
-                  <label className="label">Approver</label>
-                  <input
-                    className="input"
-                    placeholder="Enter approver name or email"
-                    value={((selectedNode.data as WorkflowNodeData).config?.approver as string) ?? ''}
-                    onChange={(e) => updateNodeData({ config: { ...(selectedNode.data as WorkflowNodeData).config, approver: e.target.value } })}
-                  />
-                  <p className="text-[11px] text-slate-400 mt-1">Execution pauses until this person approves</p>
-                </div>
-              )}
-
-              <div>
-                <label className="label">Timeout (s)</label>
-                <input
-                  type="number"
-                  className="input"
-                  value={selectedConfig.timeoutSec}
-                  onChange={(e) => updateConfig({ timeoutSec: Number(e.target.value) })}
-                />
-              </div>
-              <div>
-                <label className="label">Retry Count</label>
-                <input
-                  type="number"
-                  className="input"
-                  value={selectedConfig.retryCount}
-                  onChange={(e) => updateConfig({ retryCount: Number(e.target.value) })}
-                />
-              </div>
-              <div>
-                <label className="label">Logging Level</label>
-                <select
-                  className="input"
-                  value={selectedConfig.loggingLevel}
-                  onChange={(e) => updateConfig({ loggingLevel: e.target.value })}
-                >
-                  <option value="debug">Debug</option>
-                  <option value="info">Info</option>
-                  <option value="warning">Warning</option>
-                  <option value="error">Error</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="label">Input Mapping</label>
-                <textarea
-                  className="input font-mono text-xs min-h-20"
-                  placeholder="{{nodes.previous.output}}"
-                  value={selectedConfig.inputMapping}
-                  onChange={(e) => updateConfig({ inputMapping: e.target.value })}
-                />
-                <p className="text-[11px] text-slate-400 mt-1">Map previous output to this node's input</p>
-              </div>
-
-              <div>
-                <label className="label">Output Mapping</label>
-                <textarea
-                  className="input font-mono text-xs min-h-20"
-                  placeholder="{{this.output}}"
-                  value={selectedConfig.outputMapping}
-                  onChange={(e) => updateConfig({ outputMapping: e.target.value })}
-                />
-              </div>
-
-              <div>
-                <label className="label">Notes</label>
-                <textarea
-                  className="input min-h-16"
-                  placeholder="Add notes for this node..."
-                  value={(selectedNode.data as WorkflowNodeData).notes ?? ''}
-                  onChange={(e) => updateNodeData({ notes: e.target.value })}
-                />
-              </div>
-
-              <div className="flex gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-                <button onClick={duplicateNode} className="btn-secondary text-sm flex-1 justify-center" title="Duplicate (Ctrl+D)"><Copy className="w-3.5 h-3.5" /> Duplicate</button>
-                <button onClick={deleteNode} className="btn-danger text-sm" title="Delete (Del)"><Trash2 className="w-3.5 h-3.5" /></button>
-              </div>
-            </div>
-          </aside>
+          <NodeInspector
+            selectedNode={selectedNode}
+            nodes={nodes}
+            edges={edges}
+            onUpdate={updateNodeData}
+            onDuplicate={duplicateNode}
+            onDelete={deleteNode}
+            onClose={() => setSelectedNodeId(null)}
+          />
         )}
 
-        {/* Right properties panel — Edge */}
         {selectedEdge && !selectedNode && (
-          <aside className="w-72 shrink-0 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col">
+          <aside className="w-[22rem] shrink-0 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col">
             <div className="p-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Settings2 className="w-4 h-4 text-brand-600 dark:text-brand-400" />
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Connection</h3>
-              </div>
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Connection</h3>
               <button onClick={() => setSelectedEdgeId(null)} className="btn-ghost p-1"><X className="w-4 h-4" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -974,14 +628,25 @@ function BuilderInner() {
                 <input
                   className="input"
                   placeholder="e.g. true / false / default"
-                  value={selectedEdge.label ?? ''}
+                  value={String(selectedEdge.label ?? '')}
                   onChange={(e) => updateEdgeLabel(e.target.value)}
                 />
-                <p className="text-[11px] text-slate-400 mt-1">Shown on the connection line</p>
               </div>
-              <button onClick={deleteEdge} className="btn-danger text-sm w-full justify-center"><Trash2 className="w-3.5 h-3.5" /> Delete Connection</button>
+              <button onClick={deleteEdge} className="btn-danger text-sm w-full justify-center">Delete connection</button>
             </div>
           </aside>
+        )}
+
+        {!selectedNode && !selectedEdge && (
+          <WorkflowSettingsPanel
+            name={wf.name}
+            description={wf.description}
+            triggerType={wf.triggerType}
+            defaultInput={wf.defaultInput ?? '{}'}
+            failurePolicy={wf.failurePolicy}
+            maxExecutionTimeSec={wf.maxExecutionTimeSec}
+            onChange={(patch) => updateWorkflow(wf.id, patch as Partial<typeof wf>)}
+          />
         )}
       </div>
 

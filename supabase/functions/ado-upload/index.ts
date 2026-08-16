@@ -19,6 +19,13 @@ interface UploadRequest {
     expectedOutcome?: string;
   }>;
   sourceWorkItemId?: number | string;
+  adoOrg?: string;
+  adoProject?: string;
+  adoApiVersion?: string;
+  adoWorkItemType?: string;
+  adoTags?: string;
+  linkToSource?: boolean;
+  priorityMap?: Record<string, number>;
 }
 
 const PRIORITY_MAP: Record<string, number> = {
@@ -52,8 +59,12 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const adoOrg = Deno.env.get("ADO_ORG");
-    const apiVersion = Deno.env.get("ADO_API_VERSION") ?? "7.0";
+    const adoOrg = (body.adoOrg && String(body.adoOrg).trim()) || Deno.env.get("ADO_ORG");
+    const apiVersion = (body.adoApiVersion && String(body.adoApiVersion).trim()) || Deno.env.get("ADO_API_VERSION") || "7.0";
+    const workItemType = body.adoWorkItemType || "Test Case";
+    const tags = body.adoTags || "AI-Orchestration-Agent";
+    const linkToSource = body.linkToSource !== false;
+    const priorityMap = { ...PRIORITY_MAP, ...(body.priorityMap ?? {}) };
 
     if (!adoOrg) {
       return new Response(
@@ -105,7 +116,7 @@ Deno.serve(async (req: Request) => {
     };
 
     // Discover the project name from the source work item if available.
-    let projectName = "";
+    let projectName = (body.adoProject && String(body.adoProject).trim()) || "";
     let sourceWorkItemUrl = "";
     if (body.sourceWorkItemId) {
       const wiUrl = `https://dev.azure.com/${cleanOrg}/_apis/wit/workitems/${body.sourceWorkItemId}?api-version=${apiVersion}`;
@@ -137,7 +148,7 @@ Deno.serve(async (req: Request) => {
       const preconditions = Array.isArray(preconditionsRaw)
         ? preconditionsRaw.join("\n- ")
         : (typeof preconditionsRaw === "string" ? preconditionsRaw : "");
-      const priorityVal = PRIORITY_MAP[tc.priority ?? "medium"] ?? 3;
+      const priorityVal = priorityMap[tc.priority ?? "medium"] ?? 3;
       const expectedOutcome = tc.expectedOutcome ?? "";
 
       const fullDescription = preconditions
@@ -151,10 +162,10 @@ Deno.serve(async (req: Request) => {
         { op: "add", path: "/fields/Microsoft.VSTS.Common.Priority", value: priorityVal },
         { op: "add", path: "/fields/System.Description", value: fullDescription },
         { op: "add", path: "/fields/Microsoft.VSTS.TCM.Steps", value: stepsXml },
-        { op: "add", path: "/fields/System.Tags", value: "AI-Orchestration-Agent" },
+        { op: "add", path: "/fields/System.Tags", value: tags },
       ];
 
-      if (body.sourceWorkItemId && sourceWorkItemUrl) {
+      if (linkToSource && body.sourceWorkItemId && sourceWorkItemUrl) {
         document.push({
           op: "add",
           path: "/relations/-",
@@ -166,7 +177,8 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      const createUrl = `https://dev.azure.com/${cleanOrg}/${encodedProject}/_apis/wit/workitems/$Test%20Case?api-version=${apiVersion}`;
+      const encodedType = encodeURIComponent(workItemType.replace(/^\$/, ""));
+      const createUrl = `https://dev.azure.com/${cleanOrg}/${encodedProject}/_apis/wit/workitems/$${encodedType}?api-version=${apiVersion}`;
 
       try {
         const createRes = await fetch(createUrl, {
