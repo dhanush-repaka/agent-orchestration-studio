@@ -192,7 +192,8 @@ function BuilderInner() {
   // Click-to-add from palette
   const addNodeFromPalette = useCallback((item: NodePaletteItem) => {
     if (!wf) return;
-    const position = { x: 200 + Math.random() * 100, y: 150 + Math.random() * 100 };
+    const index = nodes.length;
+    const position = { x: 80 + (index % 3) * 260, y: 80 + Math.floor(index / 3) * 150 };
     const matchingAgent = item.kind === 'agent'
       ? agents.find((a) => a.id === item.agentId)
       : undefined;
@@ -436,7 +437,7 @@ function BuilderInner() {
         <button onClick={handleValidate} className="btn-ghost p-2 shrink-0" title="Validate"><CheckCircle2 className="w-4 h-4" /></button>
         <button onClick={() => setLocked(!locked)} className={`btn-ghost p-2 shrink-0 ${locked ? 'text-amber-500' : ''}`} title="Lock editing"><Lock className="w-4 h-4" /></button>
         <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-1 shrink-0" />
-        <button onClick={handleSave} className="btn-secondary text-sm shrink-0" title="Save (Ctrl+S)"><Save className="w-4 h-4" /> Save</button>
+        <button onClick={handleSave} className="btn-secondary text-sm shrink-0" title="Save (Ctrl+S)" aria-label="Save workflow"><Save className="w-4 h-4" /> Save</button>
         <button onClick={handleExport} className="btn-secondary text-sm shrink-0"><Download className="w-4 h-4" /> Export</button>
         <button onClick={() => fileInputRef.current?.click()} className="btn-secondary text-sm shrink-0"><Upload className="w-4 h-4" /> Import</button>
         <input ref={fileInputRef} type="file" accept=".json" onChange={handleFileImport} className="hidden" />
@@ -463,7 +464,7 @@ function BuilderInner() {
           {isRunning ? (
             <button onClick={cancelRun} className="btn-danger text-sm shrink-0"><X className="w-4 h-4" /> Cancel Run</button>
           ) : (
-            <button onClick={() => { setRunInput(wf.defaultInput && wf.defaultInput !== '{}' ? wf.defaultInput : '{\n  "workItemId": \n}'); setShowRunModal(true); }} className="btn-primary text-sm shrink-0"><Play className="w-4 h-4" /> Run Workflow</button>
+            <button onClick={() => { setRunInput(wf.defaultInput && wf.defaultInput !== '{}' ? wf.defaultInput : '{\n  "workItemId": \n}'); setShowRunModal(true); }} className="btn-primary text-sm shrink-0" aria-label="Open run workflow dialog"><Play className="w-4 h-4" /> Run Workflow</button>
           )}
         </div>
       </div>
@@ -488,8 +489,9 @@ function BuilderInner() {
             <div className="relative">
               <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
-                type="text"
+                type="search"
                 placeholder="Search nodes..."
+                aria-label="Search nodes"
                 value={paletteSearch}
                 onChange={(e) => setPaletteSearch(e.target.value)}
                 className="input pl-8 py-1.5 text-sm"
@@ -679,12 +681,14 @@ function BuilderInner() {
                 </div>
               </div>
               <div>
-                <label className="label">Workflow Input</label>
+                <label className="label" htmlFor="run-workflow-input">Workflow Input</label>
                 <textarea
                   className="input font-mono text-xs min-h-24"
                   value={runInput}
                   onChange={(e) => setRunInput(e.target.value)}
                   placeholder='{"workItemId": 123}'
+                  aria-label="Workflow input JSON"
+                  id="run-workflow-input"
                 />
                 <p className="text-[11px] text-slate-400 mt-1">Enter the runtime input values for this execution (JSON format)</p>
               </div>
@@ -705,7 +709,7 @@ function BuilderInner() {
             </div>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setShowRunModal(false)} className="btn-secondary">Cancel</button>
-              <button onClick={handleRun} className="btn-primary"><Play className="w-4 h-4" /> Run</button>
+              <button onClick={handleRun} className="btn-primary" aria-label="Confirm run workflow"><Play className="w-4 h-4" /> Run</button>
             </div>
           </div>
         </div>
