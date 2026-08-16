@@ -67,7 +67,7 @@ export function RunDetailsPage() {
         <SummaryCard icon={Coins} label="Est. Cost" value={`$${run.estimatedCost.toFixed(2)}`} color="text-teal-600" />
         <SummaryCard icon={User} label="Triggered By" value={run.triggeredBy} color="text-slate-600" />
         <SummaryCard icon={CheckCircle2} label="Start" value={run.startTime.slice(11, 19)} color="text-emerald-600" />
-        <SummaryCard icon={XCircle} label="End" value={run.endTime?.slice(11, 19) ?? '—'} color="text-red-600" />
+        <SummaryCard icon={run.status === 'failed' ? XCircle : CheckCircle2} label="End" value={run.endTime?.slice(11, 19) ?? '—'} color={run.status === 'failed' ? 'text-red-600' : 'text-emerald-600'} />
       </div>
 
       {/* Node executions */}
