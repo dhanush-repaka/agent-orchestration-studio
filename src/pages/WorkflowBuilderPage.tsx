@@ -193,31 +193,33 @@ function BuilderInner() {
   // Click-to-add from palette
   const addNodeFromPalette = useCallback((item: NodePaletteItem) => {
     if (!wf) return;
-    const index = nodes.length;
-    const position = { x: 80 + (index % 3) * 260, y: 80 + Math.floor(index / 3) * 150 };
     const matchingAgent = item.kind === 'agent'
       ? agents.find((a) => a.id === item.agentId)
       : undefined;
-    const newNode: Node = {
-      id: getNodeId(),
-      type: 'studioNode',
-      position,
-      data: {
-        kind: item.kind,
-        nodeType: item.nodeType ?? item.type,
-        label: matchingAgent?.displayName ?? item.label,
-        agentType: matchingAgent?.type ?? item.agentType,
-        agentId: matchingAgent?.id,
-        icon: matchingAgent?.icon ?? item.icon,
-        status: item.kind === 'agent' ? (matchingAgent ? 'ready' : 'not-configured') : 'ready',
-        config: defaultConfig(),
-      } as WorkflowNodeData,
-    };
-    const newNodes = [...nodes, newNode];
-    setNodes(newNodes);
-    setConfigs((c) => ({ ...c, [newNode.id]: defaultConfig() }));
-    pushHistory(newNodes, edges);
-  }, [nodes, edges, wf, agents, setNodes, setConfigs, pushHistory]);
+    setNodes((nds) => {
+      const index = nds.length;
+      const position = { x: 80 + (index % 3) * 260, y: 80 + Math.floor(index / 3) * 150 };
+      const newNode: Node = {
+        id: getNodeId(),
+        type: 'studioNode',
+        position,
+        data: {
+          kind: item.kind,
+          nodeType: item.nodeType ?? item.type,
+          label: matchingAgent?.displayName ?? item.label,
+          agentType: matchingAgent?.type ?? item.agentType,
+          agentId: matchingAgent?.id,
+          icon: matchingAgent?.icon ?? item.icon,
+          status: item.kind === 'agent' ? (matchingAgent ? 'ready' : 'not-configured') : 'ready',
+          config: defaultConfig(),
+        } as WorkflowNodeData,
+      };
+      const newNodes = [...nds, newNode];
+      setConfigs((c) => ({ ...c, [newNode.id]: defaultConfig() }));
+      queueMicrotask(() => pushHistory(newNodes, edges));
+      return newNodes;
+    });
+  }, [edges, wf, agents, setNodes, setConfigs, pushHistory]);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const selectedEdge = edges.find((e) => e.id === selectedEdgeId);
