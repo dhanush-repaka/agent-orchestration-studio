@@ -196,6 +196,27 @@ let wfIdCounter = 100;
 let runGeneration = 0;
 let approvalWait: { resolve: (ok: boolean) => void } | null = null;
 
+function maxNumericId(prefix: string, ids: string[], fallback: number): number {
+  let max = fallback;
+  for (const id of ids) {
+    if (!id.startsWith(prefix)) continue;
+    const n = Number(id.slice(prefix.length));
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return max;
+}
+
+function uniquePrefixedId(prefix: 'a' | 'w', taken: Iterable<string>): string {
+  const set = new Set(taken);
+  if (prefix === 'a') agentIdCounter = maxNumericId('a', [...set], agentIdCounter);
+  else wfIdCounter = maxNumericId('w', [...set], wfIdCounter);
+  let id = prefix === 'a' ? `a${++agentIdCounter}` : `w${++wfIdCounter}`;
+  while (set.has(id)) {
+    id = prefix === 'a' ? `a${++agentIdCounter}` : `w${++wfIdCounter}`;
+  }
+  return id;
+}
+
 export const useStore = create<AppState>((set, get) => ({
   page: typeof window !== 'undefined' ? pageFromPath(window.location.pathname) : 'dashboard',
   setPage: (p) => {
@@ -248,6 +269,10 @@ export const useStore = create<AppState>((set, get) => ({
   setSelectedRun: (id) => set({ selectedRunId: id }),
 
   createAgent: (agent) => {
+    const id = get().agents.some((a) => a.id === agent.id)
+      ? uniquePrefixedId('a', get().agents.map((a) => a.id))
+      : agent.id;
+    agent.id = id;
     const next = { ...agent, persisted: agent.persisted ?? false };
     set((s) => ({ agents: [next, ...s.agents] }));
     if (next.persisted !== false) persistAgent({ ...next, persisted: true });
@@ -266,7 +291,7 @@ export const useStore = create<AppState>((set, get) => ({
   cloneAgent: (id) => {
     const agent = get().agents.find((a) => a.id === id);
     if (!agent) return;
-    const newId = `a${++agentIdCounter}`;
+    const newId = uniquePrefixedId('a', get().agents.map((a) => a.id));
     const clone: Agent = {
       ...agent,
       id: newId,
@@ -293,8 +318,13 @@ export const useStore = create<AppState>((set, get) => ({
   })),
 
   createWorkflow: (wf) => {
-    set((s) => ({ workflows: [wf, ...s.workflows] }));
-    persistWorkflow(wf);
+    const id = get().workflows.some((w) => w.id === wf.id)
+      ? uniquePrefixedId('w', get().workflows.map((w) => w.id))
+      : wf.id;
+    wf.id = id;
+    const next = { ...wf, id };
+    set((s) => ({ workflows: [next, ...s.workflows], selectedWorkflowId: id }));
+    persistWorkflow(next);
   },
   updateWorkflow: (id, patch) => {
     set((s) => ({
@@ -310,7 +340,7 @@ export const useStore = create<AppState>((set, get) => ({
   cloneWorkflow: (id) => {
     const wf = get().workflows.find((w) => w.id === id);
     if (!wf) return;
-    const newId = `w${++wfIdCounter}`;
+    const newId = uniquePrefixedId('w', get().workflows.map((w) => w.id));
     const clone: Workflow = {
       ...wf,
       id: newId,
