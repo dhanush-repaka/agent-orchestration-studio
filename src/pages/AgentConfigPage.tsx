@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useId, cloneElement, isValidElement, type ReactElement } from 'react';
 import { useStore } from '@/store';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -149,7 +149,7 @@ export function AgentConfigPage() {
           </div>
         </div>
         <div className="ml-auto flex gap-2">
-          <button onClick={handleSave} className="btn-primary"><Save className="w-4 h-4" /> Save</button>
+          <button onClick={handleSave} className="btn-primary" aria-label="Save agent"><Save className="w-4 h-4" /> Save</button>
         </div>
       </div>
 
@@ -512,10 +512,14 @@ function SectionCard({ title, icon: I, children }: { title: string; icon: typeof
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  const id = useId();
+  const control = isValidElement(children)
+    ? cloneElement(children as ReactElement<{ id?: string; 'aria-label'?: string }>, { id, 'aria-label': label })
+    : children;
   return (
     <div>
-      <label className="label">{label}</label>
-      {children}
+      <label className="label" htmlFor={id}>{label}</label>
+      {control}
     </div>
   );
 }

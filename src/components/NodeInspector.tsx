@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useId, cloneElement, isValidElement, type ReactElement } from 'react';
 import type { Node, Edge } from '@xyflow/react';
 import { useStore, newAgentSkeleton } from '@/store';
 import { Icon } from '@/components/Icon';
@@ -102,7 +102,7 @@ export function NodeInspector({ selectedNode, nodes, edges, onUpdate, onDuplicat
           <Settings2 className="w-4 h-4 text-brand-600 dark:text-brand-400 shrink-0" />
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white truncate">{data.label}</h3>
         </div>
-        <button onClick={onClose} className="btn-ghost p-1"><X className="w-4 h-4" /></button>
+        <button onClick={onClose} className="btn-ghost p-1" aria-label="Close inspector"><X className="w-4 h-4" /></button>
       </div>
 
       <div className="px-2 pt-2 flex gap-0.5 overflow-x-auto border-b border-slate-200 dark:border-slate-800">
@@ -218,10 +218,14 @@ export function NodeInspector({ selectedNode, nodes, edges, onUpdate, onDuplicat
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  const id = useId();
+  const control = isValidElement(children)
+    ? cloneElement(children as ReactElement<{ id?: string; 'aria-label'?: string }>, { id, 'aria-label': label })
+    : children;
   return (
     <div>
-      <label className="label">{label}</label>
-      {children}
+      <label className="label" htmlFor={id}>{label}</label>
+      {control}
     </div>
   );
 }
@@ -522,7 +526,7 @@ export function WorkflowSettingsPanel({
           <Icon name="Settings" className="w-4 h-4 text-brand-600" />
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Workflow</h3>
         </div>
-        {onClose && <button onClick={onClose} className="btn-ghost p-1"><X className="w-4 h-4" /></button>}
+        {onClose && <button onClick={onClose} className="btn-ghost p-1" aria-label="Close workflow settings"><X className="w-4 h-4" /></button>}
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         <Field label="Name"><input className="input" value={name} onChange={(e) => onChange({ name: e.target.value })} /></Field>
