@@ -107,10 +107,12 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
         <button onClick={onClose} className="btn-ghost p-1" aria-label="Close inspector"><X className="w-4 h-4" /></button>
       </div>
 
-      <div className="px-2 pt-2 flex gap-0.5 overflow-x-auto border-b border-slate-200 dark:border-slate-800">
+      <div className="px-2 pt-2 flex gap-0.5 overflow-x-auto border-b border-slate-200 dark:border-slate-800" role="tablist" aria-label="Node inspector">
         {visibleTabs.map((t) => (
           <button
             key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
             className={`flex items-center gap-1 px-2 py-1.5 text-[11px] font-medium rounded-t-md whitespace-nowrap ${tab === t.id ? 'bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'}`}
           >
@@ -220,7 +222,7 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
 
       <div className="p-3 border-t border-slate-200 dark:border-slate-800 flex gap-2">
         <button onClick={onDuplicate} className="btn-secondary text-sm flex-1 justify-center"><Copy className="w-3.5 h-3.5" /> Duplicate</button>
-        <button onClick={onDelete} className="btn-danger text-sm"><Trash2 className="w-3.5 h-3.5" /></button>
+        <button onClick={onDelete} className="btn-danger text-sm" aria-label="Delete node"><Trash2 className="w-3.5 h-3.5" /></button>
       </div>
     </aside>
   );

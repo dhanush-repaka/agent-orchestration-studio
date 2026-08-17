@@ -467,7 +467,7 @@ function BuilderInner() {
             </span>
           )}
           {isRunning ? (
-            <button onClick={cancelRun} className="btn-danger text-sm shrink-0"><X className="w-4 h-4" /> Cancel Run</button>
+            <button onClick={cancelRun} className="btn-danger text-sm shrink-0" aria-label="Cancel run"><X className="w-4 h-4" /> Cancel Run</button>
           ) : (
             <button onClick={() => { setRunInput(wf.defaultInput && wf.defaultInput !== '{}' ? wf.defaultInput : '{\n  "workItemId": \n}'); setShowRunModal(true); }} className="btn-primary text-sm shrink-0" aria-label="Open run workflow dialog"><Play className="w-4 h-4" /> Run Workflow</button>
           )}
@@ -482,7 +482,7 @@ function BuilderInner() {
             <ul className="text-xs text-red-700 dark:text-red-300 space-y-0.5">
               {validationErrors.map((e, i) => <li key={i}>{e}</li>)}
             </ul>
-            <button onClick={() => setValidationErrors([])} className="ml-auto btn-ghost p-1 text-red-500"><X className="w-4 h-4" /></button>
+            <button onClick={() => setValidationErrors([])} className="ml-auto btn-ghost p-1 text-red-500" aria-label="Dismiss validation errors"><X className="w-4 h-4" /></button>
           </div>
         </div>
       )}
@@ -620,20 +620,22 @@ function BuilderInner() {
           <aside className="w-[22rem] shrink-0 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col">
             <div className="p-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Connection</h3>
-              <button onClick={() => setSelectedEdgeId(null)} className="btn-ghost p-1"><X className="w-4 h-4" /></button>
+              <button onClick={() => setSelectedEdgeId(null)} className="btn-ghost p-1" aria-label="Close connection inspector"><X className="w-4 h-4" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               <div>
-                <label className="label">From</label>
-                <input className="input opacity-60" disabled value={nodes.find((n) => n.id === selectedEdge.source)?.data ? (nodes.find((n) => n.id === selectedEdge.source)?.data as WorkflowNodeData).label : ''} />
+                <label className="label" htmlFor="edge-from">From</label>
+                <input id="edge-from" aria-label="From" className="input opacity-60" disabled value={nodes.find((n) => n.id === selectedEdge.source)?.data ? (nodes.find((n) => n.id === selectedEdge.source)?.data as WorkflowNodeData).label : ''} />
               </div>
               <div>
-                <label className="label">To</label>
-                <input className="input opacity-60" disabled value={nodes.find((n) => n.id === selectedEdge.target)?.data ? (nodes.find((n) => n.id === selectedEdge.target)?.data as WorkflowNodeData).label : ''} />
+                <label className="label" htmlFor="edge-to">To</label>
+                <input id="edge-to" aria-label="To" className="input opacity-60" disabled value={nodes.find((n) => n.id === selectedEdge.target)?.data ? (nodes.find((n) => n.id === selectedEdge.target)?.data as WorkflowNodeData).label : ''} />
               </div>
               <div>
-                <label className="label">Label</label>
+                <label className="label" htmlFor="edge-label">Label</label>
                 <input
+                  id="edge-label"
+                  aria-label="Label"
                   className="input"
                   placeholder="e.g. true / false / default"
                   value={String(selectedEdge.label ?? '')}

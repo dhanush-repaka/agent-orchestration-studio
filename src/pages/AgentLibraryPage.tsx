@@ -84,33 +84,34 @@ export function AgentLibraryPage() {
           <div className="relative flex-1 min-w-48">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
-              type="text"
+              type="search"
               placeholder="Search agents..."
+              aria-label="Search agents"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="input pl-9"
             />
           </div>
-          <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="input w-auto">
+          <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="input w-auto" aria-label="Filter by type">
             <option value="all">All Types</option>
             {AGENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
-          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="input w-auto">
+          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="input w-auto" aria-label="Filter by status">
             <option value="all">All Statuses</option>
             <option value="draft">Draft</option>
             <option value="ready">Ready</option>
             <option value="published">Published</option>
             <option value="archived">Archived</option>
           </select>
-          <select value={filterOwner} onChange={(e) => setFilterOwner(e.target.value)} className="input w-auto">
+          <select value={filterOwner} onChange={(e) => setFilterOwner(e.target.value)} className="input w-auto" aria-label="Filter by owner">
             <option value="all">All Owners</option>
             {owners.map((o) => <option key={o} value={o}>{o}</option>)}
           </select>
           <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
-            <button onClick={() => setView('grid')} className={`px-3 py-2 text-sm ${view === 'grid' ? 'bg-brand-600 text-white' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300'}`}>
+            <button onClick={() => setView('grid')} className={`px-3 py-2 text-sm ${view === 'grid' ? 'bg-brand-600 text-white' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300'}`} aria-label="Grid view" aria-pressed={view === 'grid'}>
               <Filter className="w-4 h-4" />
             </button>
-            <button onClick={() => setView('table')} className={`px-3 py-2 text-sm ${view === 'table' ? 'bg-brand-600 text-white' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300'}`}>
+            <button onClick={() => setView('table')} className={`px-3 py-2 text-sm ${view === 'table' ? 'bg-brand-600 text-white' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300'}`} aria-label="Table view" aria-pressed={view === 'table'}>
               <Bot className="w-4 h-4" />
             </button>
           </div>
@@ -203,10 +204,10 @@ export function AgentLibraryPage() {
                     <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">{a.updatedAt.slice(0, 10)}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => handleEdit(a.id)} className="btn-ghost p-1.5" title="Edit"><Edit3 className="w-4 h-4" /></button>
-                        <button onClick={() => cloneAgent(a.id)} className="btn-ghost p-1.5" title="Clone"><Copy className="w-4 h-4" /></button>
-                        <button onClick={() => handleExport(a)} className="btn-ghost p-1.5" title="Export"><Download className="w-4 h-4" /></button>
-                        <button onClick={() => setConfirmDelete(a.id)} className="btn-ghost p-1.5 text-red-500" title="Delete"><Trash2 className="w-4 h-4" /></button>
+                        <button onClick={() => handleEdit(a.id)} className="btn-ghost p-1.5" title="Edit" aria-label={`Edit ${a.displayName}`}><Edit3 className="w-4 h-4" /></button>
+                        <button onClick={() => cloneAgent(a.id)} className="btn-ghost p-1.5" title="Clone" aria-label={`Clone ${a.displayName}`}><Copy className="w-4 h-4" /></button>
+                        <button onClick={() => handleExport(a)} className="btn-ghost p-1.5" title="Export" aria-label={`Export ${a.displayName}`}><Download className="w-4 h-4" /></button>
+                        <button onClick={() => setConfirmDelete(a.id)} className="btn-ghost p-1.5 text-red-500" title="Delete" aria-label={`Delete ${a.displayName}`}><Trash2 className="w-4 h-4" /></button>
                       </div>
                     </td>
                   </tr>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useId, cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react';
 import { useStore } from '@/store';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -11,6 +11,19 @@ import {
   Save, X,
 } from 'lucide-react';
 import type { Credential, Integration, Prompt, Evaluation, AuditLog } from '@/types';
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  const id = useId();
+  const control = isValidElement(children)
+    ? cloneElement(children as ReactElement<{ id?: string; 'aria-label'?: string }>, { id, 'aria-label': label })
+    : children;
+  return (
+    <div>
+      <label className="label" htmlFor={id}>{label}</label>
+      {control}
+    </div>
+  );
+}
 
 // ============================================================================
 // Tools & Integrations
@@ -148,7 +161,7 @@ export function ToolsPage() {
                   <p className="text-xs text-slate-500 dark:text-slate-400">Configure integration settings</p>
                 </div>
               </div>
-              <button onClick={() => setEditingTool(null)} className="btn-ghost p-2"><X className="w-5 h-5" /></button>
+              <button onClick={() => setEditingTool(null)} className="btn-ghost p-2" aria-label="Close tool editor"><X className="w-5 h-5" /></button>
             </div>
 
             <div className="p-5 space-y-4">
@@ -158,22 +171,16 @@ export function ToolsPage() {
                 </div>
               ) : (
               <>
-              {/* Description */}
-              <div>
-                <label className="label">Description</label>
+              <Field label="Description">
                 <textarea className="input min-h-16" value={config.description} onChange={(e) => setConfig({ ...config, description: e.target.value })} />
-              </div>
+              </Field>
 
-              {/* Endpoint */}
-              <div>
-                <label className="label">Endpoint URL</label>
+              <Field label="Endpoint URL">
                 <input className="input font-mono text-sm" placeholder="https://api.example.com/v1" value={config.endpoint} onChange={(e) => setConfig({ ...config, endpoint: e.target.value })} />
-              </div>
+              </Field>
 
-              {/* Auth method + key */}
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="label">Authentication Method</label>
+                <Field label="Authentication Method">
                   <select className="input" value={config.authMethod} onChange={(e) => setConfig({ ...config, authMethod: e.target.value as ToolConfig['authMethod'] })}>
                     <option value="none">None</option>
                     <option value="api-key">API Key</option>
@@ -181,43 +188,34 @@ export function ToolsPage() {
                     <option value="basic">Basic Auth</option>
                     <option value="bearer">Bearer Token</option>
                   </select>
-                </div>
-                <div>
-                  <label className="label">API Key / Token</label>
+                </Field>
+                <Field label="API Key / Token">
                   <input type="password" className="input font-mono text-sm" placeholder="••••••••••••" value={config.apiKey} onChange={(e) => setConfig({ ...config, apiKey: e.target.value })} disabled={config.authMethod === 'none'} />
-                </div>
+                </Field>
               </div>
 
-              {/* Input schema */}
-              <div>
-                <label className="label">Input Schema (JSON)</label>
+              <Field label="Input Schema (JSON)">
                 <textarea className="input min-h-24 font-mono text-xs" value={config.inputSchema} onChange={(e) => setConfig({ ...config, inputSchema: e.target.value })} />
-              </div>
+              </Field>
 
-              {/* Output schema */}
-              <div>
-                <label className="label">Output Schema (JSON)</label>
+              <Field label="Output Schema (JSON)">
                 <textarea className="input min-h-24 font-mono text-xs" value={config.outputSchema} onChange={(e) => setConfig({ ...config, outputSchema: e.target.value })} />
-              </div>
+              </Field>
 
-              {/* Timeout + retry + permission */}
               <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="label">Timeout (s)</label>
+                <Field label="Timeout (s)">
                   <input type="number" className="input" value={config.timeoutSec} onChange={(e) => setConfig({ ...config, timeoutSec: parseInt(e.target.value) || 0 })} />
-                </div>
-                <div>
-                  <label className="label">Retry Count</label>
+                </Field>
+                <Field label="Retry Count">
                   <input type="number" className="input" value={config.retryCount} onChange={(e) => setConfig({ ...config, retryCount: parseInt(e.target.value) || 0 })} />
-                </div>
-                <div>
-                  <label className="label">Permission Level</label>
+                </Field>
+                <Field label="Permission Level">
                   <select className="input" value={config.permissionLevel} onChange={(e) => setConfig({ ...config, permissionLevel: e.target.value as ToolConfig['permissionLevel'] })}>
                     <option value="read">Read</option>
                     <option value="write">Write</option>
                     <option value="admin">Admin</option>
                   </select>
-                </div>
+                </Field>
               </div>
               </>
               )}
@@ -291,7 +289,7 @@ export function PromptsPage() {
       </div>
       <div className="relative">
         <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-        <input className="input pl-9" placeholder="Search prompts..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="input pl-9" placeholder="Search prompts..." aria-label="Search prompts" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {filtered.map((p) => <PromptCard key={p.id} prompt={p} />)}
@@ -586,9 +584,9 @@ export function CredentialsPage() {
                 <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">{c.lastRotatedAt?.slice(0, 10) ?? '—'}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1">
-                    <button onClick={() => addToast('Rotate credential (demo)', 'info')} className="btn-ghost p-1.5"><RotateCw className="w-4 h-4" /></button>
-                    <button onClick={() => openEdit(c)} className="btn-ghost p-1.5"><Edit3 className="w-4 h-4" /></button>
-                    <button onClick={() => addToast('Delete (demo)', 'info')} className="btn-ghost p-1.5 text-red-500"><Trash2 className="w-4 h-4" /></button>
+                    <button onClick={() => addToast('Rotate credential (demo)', 'info')} className="btn-ghost p-1.5" aria-label={`Rotate ${c.name}`}><RotateCw className="w-4 h-4" /></button>
+                    <button onClick={() => openEdit(c)} className="btn-ghost p-1.5" aria-label={`Edit ${c.name}`}><Edit3 className="w-4 h-4" /></button>
+                    <button onClick={() => addToast('Delete (demo)', 'info')} className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${c.name}`}><Trash2 className="w-4 h-4" /></button>
                   </div>
                 </td>
               </tr>
@@ -611,7 +609,7 @@ export function CredentialsPage() {
                   <p className="text-xs text-slate-500 dark:text-slate-400">{editingCred.name}</p>
                 </div>
               </div>
-              <button onClick={() => setEditingCred(null)} className="btn-ghost p-2"><X className="w-5 h-5" /></button>
+              <button onClick={() => setEditingCred(null)} className="btn-ghost p-2" aria-label="Close credential editor"><X className="w-5 h-5" /></button>
             </div>
 
             <div className="p-5 space-y-4">
@@ -621,13 +619,11 @@ export function CredentialsPage() {
                 </div>
               ) : (
               <>
-              <div>
-                <label className="label">Name</label>
+              <Field label="Name">
                 <input className="input" value={config.name} onChange={(e) => setConfig({ ...config, name: e.target.value })} />
-              </div>
+              </Field>
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="label">Type</label>
+                <Field label="Type">
                   <select className="input" value={config.type} onChange={(e) => setConfig({ ...config, type: e.target.value as CredentialConfig['type'] })}>
                     <option value="api-key">API Key</option>
                     <option value="oauth">OAuth</option>
@@ -635,22 +631,20 @@ export function CredentialsPage() {
                     <option value="bearer">Bearer Token</option>
                     <option value="connection-string">Connection String</option>
                   </select>
-                </div>
-                <div>
-                  <label className="label">Environment</label>
+                </Field>
+                <Field label="Environment">
                   <select className="input" value={config.environment} onChange={(e) => setConfig({ ...config, environment: e.target.value as CredentialConfig['environment'] })}>
                     <option value="development">Development</option>
                     <option value="qa">QA</option>
                     <option value="uat">UAT</option>
                     <option value="production">Production</option>
                   </select>
-                </div>
+                </Field>
               </div>
-              <div>
-                <label className="label">Secret Value</label>
+              <Field label="Secret Value">
                 <input type="password" className="input font-mono text-sm" placeholder="Enter new value to replace, or leave blank to keep existing" value={config.value} onChange={(e) => setConfig({ ...config, value: e.target.value })} />
-                <p className="text-xs text-slate-400 mt-1">For security, the current value is not shown. Enter a new value only if you want to update it.</p>
-              </div>
+              </Field>
+              <p className="text-xs text-slate-400 -mt-2">For security, the current value is not shown. Enter a new value only if you want to update it.</p>
               </>
               )}
             </div>
@@ -829,7 +823,7 @@ export function AuditPage() {
       </div>
       <div className="relative">
         <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-        <input className="input pl-9" placeholder="Search audit logs..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="input pl-9" placeholder="Search audit logs..." aria-label="Search audit logs" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
@@ -969,7 +963,7 @@ export function SettingsPage() {
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{u.email}</td>
                   <td className="px-4 py-3"><span className="badge bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300">{u.role}</span></td>
                   <td className="px-4 py-3 text-right">
-                    <button onClick={() => openEdit(u)} className="btn-ghost p-1.5"><Edit3 className="w-4 h-4" /></button>
+                    <button onClick={() => openEdit(u)} className="btn-ghost p-1.5" aria-label={`Edit ${u.name}`}><Edit3 className="w-4 h-4" /></button>
                   </td>
                 </tr>
               ))}
@@ -1003,7 +997,7 @@ export function SettingsPage() {
                   <p className="text-xs text-slate-500 dark:text-slate-400">{editingUser.name}</p>
                 </div>
               </div>
-              <button onClick={() => setEditingUser(null)} className="btn-ghost p-2"><X className="w-5 h-5" /></button>
+              <button onClick={() => setEditingUser(null)} className="btn-ghost p-2" aria-label="Close user editor"><X className="w-5 h-5" /></button>
             </div>
 
             <div className="p-5 space-y-4">
@@ -1013,16 +1007,13 @@ export function SettingsPage() {
                 </div>
               ) : (
               <>
-              <div>
-                <label className="label">Name</label>
+              <Field label="Name">
                 <input className="input" value={editName} onChange={(e) => setEditName(e.target.value)} />
-              </div>
-              <div>
-                <label className="label">Email</label>
+              </Field>
+              <Field label="Email">
                 <input className="input" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
-              </div>
-              <div>
-                <label className="label">Role</label>
+              </Field>
+              <Field label="Role">
                 <select className="input" value={editRole} onChange={(e) => setEditRole(e.target.value as typeof editRole)}>
                   <option value="Administrator">Administrator</option>
                   <option value="Agent Designer">Agent Designer</option>
@@ -1031,7 +1022,7 @@ export function SettingsPage() {
                   <option value="Approver">Approver</option>
                   <option value="Viewer">Viewer</option>
                 </select>
-              </div>
+              </Field>
               </>
               )}
             </div>
@@ -1055,18 +1046,15 @@ export function SettingsPage() {
           <h3 className="section-title">Workspace Settings</h3>
         </div>
         <div className="space-y-4">
-          <div>
-            <label className="label">Workspace Name</label>
+          <Field label="Workspace Name">
             <input className="input" defaultValue="QE Workspace" />
-          </div>
-          <div>
-            <label className="label">Default Environment</label>
+          </Field>
+          <Field label="Default Environment">
             <select className="input"><option>Production</option><option>UAT</option><option>QA</option><option>Development</option></select>
-          </div>
-          <div>
-            <label className="label">Default Logging Level</label>
+          </Field>
+          <Field label="Default Logging Level">
             <select className="input"><option>Info</option><option>Debug</option><option>Warning</option><option>Error</option></select>
-          </div>
+          </Field>
           <button onClick={() => addToast('Settings saved', 'success')} className="btn-primary"><Save className="w-4 h-4" /> Save Settings</button>
         </div>
       </div>

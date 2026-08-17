@@ -280,7 +280,7 @@ export function AgentConfigPage() {
                     <div key={inp.id} className="card p-4 bg-slate-50 dark:bg-slate-800/50">
                       <div className="flex items-center justify-between mb-3">
                         <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Input #{i + 1}</span>
-                        <button onClick={() => patch({ inputs: draft.inputs.filter((_, j) => j !== i) })} className="btn-ghost p-1 text-red-500"><Trash2 className="w-4 h-4" /></button>
+                        <button onClick={() => patch({ inputs: draft.inputs.filter((_, j) => j !== i) })} className="btn-ghost p-1 text-red-500" aria-label={`Remove input ${inp.label || i + 1}`}><Trash2 className="w-4 h-4" /></button>
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <Field label="Field Name"><input className="input" value={inp.name} onChange={(e) => { const inputs = [...draft.inputs]; inputs[i] = { ...inp, name: e.target.value }; patch({ inputs }); }} /></Field>

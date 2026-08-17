@@ -89,6 +89,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-[100] focus:top-2 focus:left-2 focus:px-4 focus:py-2 focus:rounded-lg focus:bg-brand-600 focus:text-white focus:text-sm focus:font-medium"
+      >
+        Skip to main content
+      </a>
       {/* Header */}
       <header className="h-14 shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center px-4 gap-4 z-20">
         <button onClick={toggleSidebar} className="btn-ghost p-2 lg:flex hidden" aria-label="Toggle sidebar">
@@ -244,8 +250,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <aside className={`shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 transition-all duration-200 overflow-y-auto ${collapsed ? 'w-16' : 'w-60'}`}>
-          <nav className="p-2 space-y-3">
+        <aside className={`shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 transition-all duration-200 overflow-y-auto ${collapsed ? 'w-16' : 'w-60'}`} aria-label="Sidebar">
+          <nav className="p-2 space-y-3" aria-label="Main">
             {NAV_GROUPS.map((group) => (
               <div key={group.title}>
                 {!collapsed && (
@@ -260,6 +266,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
                         onClick={() => setPage(item.id)}
                         className={`nav-item w-full ${active ? 'nav-item-active' : 'nav-item-inactive'} ${collapsed ? 'justify-center' : ''}`}
                         title={collapsed ? item.label : undefined}
+                        aria-label={item.label}
+                        aria-current={active ? 'page' : undefined}
                       >
                         <item.icon className="w-[18px] h-[18px] shrink-0" />
                         {!collapsed && <span className="truncate">{item.label}</span>}
@@ -287,7 +295,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </aside>
 
         {/* Main */}
-        <main className="flex-1 overflow-auto bg-slate-50 dark:bg-slate-950">
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-auto bg-slate-50 dark:bg-slate-950">
           {children}
         </main>
       </div>

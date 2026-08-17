@@ -12,23 +12,48 @@ import { supabase } from '@/lib/supabase';
 import { syncPageToUrl, pageFromPath } from '@/lib/routes';
 import { sanitizeWorkflowGraph } from '@/lib/graph';
 
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'object' && err !== null && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
+    return (err as { message: string }).message;
+  }
+  return String(err);
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  const name = typeof err === 'object' && err !== null && 'name' in err ? String((err as { name: unknown }).name) : '';
+  if (name === 'AbortError' || name === 'TimeoutError') return true;
+  const msg = errorMessage(err).toLowerCase();
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('network request failed') ||
+    msg.includes('aborted')
+  );
+}
+
+function logStoreError(action: string, err: unknown) {
+  if (isTransientNetworkError(err)) return;
+  console.error(`${action}:`, errorMessage(err));
+}
+
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
     .from('workflow_runs')
     .upsert({ id: run.id, data: run, updated_at: new Date().toISOString() });
-  if (error) console.error('Failed to persist run:', error.message);
+  if (error) logStoreError('Failed to persist run', error);
 }
 
 export async function loadRunsFromDb(): Promise<WorkflowRun[]> {
   try {
     const { data, error } = await supabase.from('workflow_runs').select('data');
     if (error) {
-      console.error('Failed to load runs:', error.message);
+      logStoreError('Failed to load runs', error);
       return [];
     }
     return (data ?? []).map((row) => row.data as WorkflowRun);
   } catch (err) {
-    console.error('Failed to load runs:', err instanceof Error ? err.message : err);
+    logStoreError('Failed to load runs', err);
     return [];
   }
 }
@@ -37,12 +62,12 @@ async function persistAgent(agent: Agent) {
   const { error } = await supabase
     .from('agents')
     .upsert({ id: agent.id, data: agent, updated_at: new Date().toISOString() });
-  if (error) console.error('Failed to persist agent:', error.message);
+  if (error) logStoreError('Failed to persist agent', error);
 }
 
 async function deleteAgentFromDb(id: string) {
   const { error } = await supabase.from('agents').delete().eq('id', id);
-  if (error) console.error('Failed to delete agent:', error.message);
+  if (error) logStoreError('Failed to delete agent', error);
 }
 
 function isUntitledSkeleton(a: Agent): boolean {
@@ -60,12 +85,12 @@ export async function loadAgentsFromDb(): Promise<Agent[]> {
   try {
     const { data, error } = await supabase.from('agents').select('data');
     if (error) {
-      console.error('Failed to load agents:', error.message);
+      logStoreError('Failed to load agents', error);
       return [];
     }
     return (data ?? []).map((row) => row.data as Agent);
   } catch (err) {
-    console.error('Failed to load agents:', err instanceof Error ? err.message : err);
+    logStoreError('Failed to load agents', err);
     return [];
   }
 }
@@ -74,24 +99,24 @@ async function persistWorkflow(wf: Workflow) {
   const { error } = await supabase
     .from('workflows')
     .upsert({ id: wf.id, data: wf, updated_at: new Date().toISOString() });
-  if (error) console.error('Failed to persist workflow:', error.message);
+  if (error) logStoreError('Failed to persist workflow', error);
 }
 
 async function deleteWorkflowFromDb(id: string) {
   const { error } = await supabase.from('workflows').delete().eq('id', id);
-  if (error) console.error('Failed to delete workflow:', error.message);
+  if (error) logStoreError('Failed to delete workflow', error);
 }
 
 export async function loadWorkflowsFromDb(): Promise<Workflow[]> {
   try {
     const { data, error } = await supabase.from('workflows').select('data');
     if (error) {
-      console.error('Failed to load workflows:', error.message);
+      logStoreError('Failed to load workflows', error);
       return [];
     }
     return (data ?? []).map((row) => row.data as Workflow);
   } catch (err) {
-    console.error('Failed to load workflows:', err instanceof Error ? err.message : err);
+    logStoreError('Failed to load workflows', err);
     return [];
   }
 }

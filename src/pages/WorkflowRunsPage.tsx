@@ -130,11 +130,11 @@ export function WorkflowRunsPage() {
       <div className="card p-4 flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-48">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input className="input pl-9" placeholder="Search by workflow name..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input className="input pl-9" placeholder="Search by workflow name..." aria-label="Search workflow runs" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         <div className="flex items-center gap-2">
           <Filter className="w-4 h-4 text-slate-400" />
-          <select className="input w-auto" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <select className="input w-auto" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter runs by status">
             <option value="all">All Statuses</option>
             <option value="running">Running</option>
             <option value="completed">Completed</option>
@@ -143,7 +143,7 @@ export function WorkflowRunsPage() {
             <option value="cancelled">Cancelled</option>
             <option value="waiting-approval">Waiting Approval</option>
           </select>
-          <select className="input w-auto" value={envFilter} onChange={(e) => setEnvFilter(e.target.value)}>
+          <select className="input w-auto" value={envFilter} onChange={(e) => setEnvFilter(e.target.value)} aria-label="Filter runs by environment">
             {environments.map((e) => (
               <option key={e} value={e}>{e === 'all' ? 'All Environments' : e.charAt(0).toUpperCase() + e.slice(1)}</option>
             ))}
@@ -186,7 +186,7 @@ export function WorkflowRunsPage() {
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.totalTokens > 0 ? r.totalTokens.toLocaleString() : '—'}</td>
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.estimatedCost > 0 ? `$${r.estimatedCost.toFixed(2)}` : '—'}</td>
                     <td className="px-4 py-3 text-right">
-                      <button className="btn-ghost p-1.5"><ArrowRight className="w-4 h-4" /></button>
+                      <button className="btn-ghost p-1.5" aria-label={`Open run ${r.id}`}><ArrowRight className="w-4 h-4" /></button>
                     </td>
                   </tr>
                 ))}

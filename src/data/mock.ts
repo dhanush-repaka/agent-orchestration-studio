@@ -563,9 +563,9 @@ export const WORKFLOW_RUNS: WorkflowRun[] = [
   },
   {
     id: 'r5', workflowId: 'w3', workflowName: 'Defect Triage Assistant',
-    workflowVersion: '0.9.0', status: 'running', triggeredBy: 'ado-trigger',
-    environment: 'qa', startTime: '2025-07-22T10:05:00Z',
-    totalTokens: 0, estimatedCost: 0,
+    workflowVersion: '0.9.0', status: 'completed', triggeredBy: 'ado-trigger',
+    environment: 'qa', startTime: '2025-07-22T10:05:00Z', endTime: '2025-07-22T10:06:12Z',
+    durationMs: 72000, totalTokens: 2400, estimatedCost: 0.05,
     nodeExecutions: [], logs: [],
   },
 ];

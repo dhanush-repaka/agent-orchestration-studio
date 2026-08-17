@@ -118,6 +118,8 @@ export function DashboardPage() {
     const completed = runs.filter((r) => r.status === 'completed');
     const failed = runs.filter((r) => r.status === 'failed');
     const running = runs.filter((r) => r.status === 'running');
+    const completedToday = runsToday.filter((r) => r.status === 'completed');
+    const failedToday = runsToday.filter((r) => r.status === 'failed');
     const doneWithDuration = runs.filter((r) => r.durationMs);
     const avgTime = doneWithDuration.length
       ? Math.round(doneWithDuration.reduce((a, r) => a + (r.durationMs ?? 0), 0) / doneWithDuration.length / 1000)
@@ -162,7 +164,9 @@ export function DashboardPage() {
       activeWorkflows: workflows.length,
       runsTodayCount: runsToday.length,
       completedCount: completed.length,
+      completedTodayCount: completedToday.length,
       failedCount: failed.length,
+      failedTodayCount: failedToday.length,
       runningCount: running.length,
       avgTime,
       totalTokens,
@@ -221,8 +225,8 @@ export function DashboardPage() {
     { key: 'agents', label: 'Total Agents', icon: Bot, value: stats.totalAgents, color: 'text-brand-600 dark:text-brand-400', bg: 'bg-brand-50 dark:bg-brand-950' },
     { key: 'workflows', label: 'Active Workflows', icon: Workflow, value: stats.activeWorkflows, color: 'text-violet-600 dark:text-violet-400', bg: 'bg-violet-50 dark:bg-violet-950' },
     { key: 'runs-today', label: 'Runs Today', icon: PlayCircle, value: stats.runsTodayCount, color: 'text-sky-600 dark:text-sky-400', bg: 'bg-sky-50 dark:bg-sky-950' },
-    { key: 'success', label: 'Successful Runs', icon: CheckCircle2, value: stats.completedCount, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-950' },
-    { key: 'failed', label: 'Failed Runs', icon: XCircle, value: stats.failedCount, color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-950' },
+    { key: 'success', label: 'Successful Today', icon: CheckCircle2, value: stats.completedTodayCount, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-950' },
+    { key: 'failed', label: 'Failed Today', icon: XCircle, value: stats.failedTodayCount, color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-950' },
     { key: 'avg-time', label: 'Avg Execution Time', icon: Clock, value: stats.avgTime > 0 ? `${stats.avgTime}s` : '—', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-950' },
     { key: 'tokens', label: 'Total Token Usage', icon: Zap, value: stats.totalTokens > 0 ? `${(stats.totalTokens / 1000).toFixed(1)}K` : '—', color: 'text-indigo-600 dark:text-indigo-400', bg: 'bg-indigo-50 dark:bg-indigo-950' },
     { key: 'cost', label: 'Estimated AI Cost', icon: Coins, value: stats.totalCost > 0 ? `$${stats.totalCost.toFixed(2)}` : '—', color: 'text-teal-600 dark:text-teal-400', bg: 'bg-teal-50 dark:bg-teal-950' },
@@ -280,7 +284,10 @@ export function DashboardPage() {
         </div>
 
         <div className="card p-5">
-          <h3 className="section-title mb-4">Success vs Failure</h3>
+          <div className="mb-4">
+            <h3 className="section-title">Success vs Failure</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">All time</p>
+          </div>
           {runs.length > 0 ? (
             <DonutChart segments={[
               { label: 'Success', value: stats.completedCount, color: '#10b981' },
