@@ -1,4 +1,4 @@
-export function uniquePrefixedId(prefix: 'a' | 'w', taken: Iterable<string>): string {
+export function uniquePrefixedId(prefix: string, taken: Iterable<string>): string {
   const set = new Set(taken);
   let max = 0;
   for (const id of set) {

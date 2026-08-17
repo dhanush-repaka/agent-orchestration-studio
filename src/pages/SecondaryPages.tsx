@@ -11,6 +11,7 @@ import {
   Save, X,
 } from 'lucide-react';
 import type { Credential, Integration, Prompt, Evaluation, AuditLog } from '@/types';
+import { downloadText } from '@/lib/download';
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   const id = useId();
@@ -54,6 +55,8 @@ const DEFAULT_TOOL_CONFIG: ToolConfig = {
 
 export function ToolsPage() {
   const integrations = useStore((s) => s.integrations);
+  const addIntegration = useStore((s) => s.addIntegration);
+  const testIntegration = useStore((s) => s.testIntegration);
   const addToast = useStore((s) => s.addToast);
   const [editingTool, setEditingTool] = useState<Integration | null>(null);
   const [config, setConfig] = useState<ToolConfig>(DEFAULT_TOOL_CONFIG);
@@ -127,11 +130,12 @@ export function ToolsPage() {
   };
 
   const handleTest = () => {
+    if (!editingTool) return;
     setTesting(true);
-    setTimeout(() => {
+    window.setTimeout(() => {
+      testIntegration(editingTool.id);
       setTesting(false);
-      addToast(`${editingTool?.name} connection test passed`, 'success');
-    }, 1500);
+    }, 400);
   };
 
   return (
@@ -141,7 +145,10 @@ export function ToolsPage() {
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Tools & Integrations</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">{integrations.length} integrations · Manage connections</p>
         </div>
-        <button onClick={() => addToast('Add connection (demo)', 'info')} className="btn-primary"><Plus className="w-4 h-4" /> Add Connection</button>
+        <button onClick={() => {
+          const created = addIntegration();
+          void openEdit(created);
+        }} className="btn-primary"><Plus className="w-4 h-4" /> Add Connection</button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {integrations.map((int) => <IntegrationCard key={int.id} int={int} onEdit={() => openEdit(int)} />)}
@@ -240,7 +247,9 @@ export function ToolsPage() {
 }
 
 function IntegrationCard({ int, onEdit }: { int: Integration; onEdit: () => void }) {
-  const addToast = useStore((s) => s.addToast);
+  const testIntegration = useStore((s) => s.testIntegration);
+  const rotateIntegration = useStore((s) => s.rotateIntegration);
+  const deleteIntegration = useStore((s) => s.deleteIntegration);
   const statusColor = int.status === 'connected' ? 'bg-emerald-500' : int.status === 'error' ? 'bg-red-500' : 'bg-slate-400';
   return (
     <div className="card p-5 card-hover">
@@ -260,10 +269,10 @@ function IntegrationCard({ int, onEdit }: { int: Integration; onEdit: () => void
         <p>{int.workflowsUsing} workflow{int.workflowsUsing !== 1 ? 's' : ''} using</p>
       </div>
       <div className="flex gap-1">
-        <button onClick={() => addToast('Testing connection (demo)', 'info')} className="btn-secondary text-xs flex-1 justify-center"><Play className="w-3.5 h-3.5" /> Test</button>
+        <button onClick={() => testIntegration(int.id)} className="btn-secondary text-xs flex-1 justify-center"><Play className="w-3.5 h-3.5" /> Test</button>
         <button onClick={onEdit} className="btn-ghost p-2" title="Edit"><Edit3 className="w-4 h-4" /></button>
-        <button onClick={() => addToast('Rotate credential (demo)', 'info')} className="btn-ghost p-2" title="Rotate"><RotateCw className="w-4 h-4" /></button>
-        <button onClick={() => addToast('Delete (demo)', 'info')} className="btn-ghost p-2 text-red-500" title="Delete"><Trash2 className="w-4 h-4" /></button>
+        <button onClick={() => rotateIntegration(int.id)} className="btn-ghost p-2" title="Rotate"><RotateCw className="w-4 h-4" /></button>
+        <button onClick={() => deleteIntegration(int.id)} className="btn-ghost p-2 text-red-500" title="Delete"><Trash2 className="w-4 h-4" /></button>
       </div>
     </div>
   );
@@ -274,7 +283,7 @@ function IntegrationCard({ int, onEdit }: { int: Integration; onEdit: () => void
 // ============================================================================
 export function PromptsPage() {
   const prompts = useStore((s) => s.prompts);
-  const addToast = useStore((s) => s.addToast);
+  const addPrompt = useStore((s) => s.addPrompt);
   const [search, setSearch] = useState('');
   const filtered = prompts.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()));
 
@@ -285,7 +294,7 @@ export function PromptsPage() {
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Prompt Library</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">{prompts.length} prompts · Reusable prompt templates</p>
         </div>
-        <button onClick={() => addToast('Create prompt (demo)', 'info')} className="btn-primary"><Plus className="w-4 h-4" /> Create Prompt</button>
+        <button onClick={() => addPrompt()} className="btn-primary"><Plus className="w-4 h-4" /> Create Prompt</button>
       </div>
       <div className="relative">
         <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -299,6 +308,7 @@ export function PromptsPage() {
 }
 
 function PromptCard({ prompt }: { prompt: Prompt }) {
+  const testPrompt = useStore((s) => s.testPrompt);
   const addToast = useStore((s) => s.addToast);
   return (
     <div className="card p-5 card-hover">
@@ -318,9 +328,12 @@ function PromptCard({ prompt }: { prompt: Prompt }) {
         <span className="text-right">Used {prompt.usageCount} times</span>
       </div>
       <div className="flex gap-1">
-        <button onClick={() => addToast('Testing prompt (demo)', 'info')} className="btn-secondary text-xs flex-1 justify-center"><Play className="w-3.5 h-3.5" /> Test</button>
-        <button onClick={() => addToast('Compare versions (demo)', 'info')} className="btn-ghost p-2"><GitCompare className="w-4 h-4" /></button>
-        <button onClick={() => addToast('Export (demo)', 'info')} className="btn-ghost p-2"><Download className="w-4 h-4" /></button>
+        <button onClick={() => testPrompt(prompt.id)} className="btn-secondary text-xs flex-1 justify-center"><Play className="w-3.5 h-3.5" /> Test</button>
+        <button onClick={() => addToast(`${prompt.name} v${prompt.version} is the current stored version`, 'info')} className="btn-ghost p-2" aria-label={`Compare ${prompt.name}`}><GitCompare className="w-4 h-4" /></button>
+        <button onClick={() => {
+          downloadText(`${prompt.name.replace(/\s+/g, '-').toLowerCase()}.json`, JSON.stringify(prompt, null, 2));
+          addToast(`Exported ${prompt.name}`, 'success');
+        }} className="btn-ghost p-2" aria-label={`Export ${prompt.name}`}><Download className="w-4 h-4" /></button>
       </div>
     </div>
   );
@@ -330,15 +343,9 @@ function PromptCard({ prompt }: { prompt: Prompt }) {
 // Knowledge Sources
 // ============================================================================
 export function KnowledgePage() {
-  const addToast = useStore((s) => s.addToast);
-  const sources = [
-    { name: 'SharePoint', icon: 'FolderOpen', status: 'connected', collections: 5 },
-    { name: 'Azure DevOps', icon: 'Boxes', status: 'connected', collections: 12 },
-    { name: 'Confluence', icon: 'BookOpen', status: 'disconnected', collections: 0 },
-    { name: 'Google Drive', icon: 'File', status: 'connected', collections: 3 },
-    { name: 'Vector Database', icon: 'Database', status: 'connected', collections: 8 },
-    { name: 'SQL Database', icon: 'Database', status: 'connected', collections: 4 },
-  ];
+  const sources = useStore((s) => s.knowledgeConnections);
+  const addKnowledgeConnection = useStore((s) => s.addKnowledgeConnection);
+  const toggleKnowledgeConnection = useStore((s) => s.toggleKnowledgeConnection);
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -346,11 +353,11 @@ export function KnowledgePage() {
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Knowledge Sources</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">Manage RAG knowledge connections</p>
         </div>
-        <button onClick={() => addToast('Add knowledge source (demo)', 'info')} className="btn-primary"><Plus className="w-4 h-4" /> Add Source</button>
+        <button onClick={() => addKnowledgeConnection()} className="btn-primary"><Plus className="w-4 h-4" /> Add Source</button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {sources.map((s) => (
-          <div key={s.name} className="card p-5 card-hover">
+          <div key={s.id} className="card p-5 card-hover">
             <div className="flex items-center gap-3 mb-3">
               <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
                 <Icon name={s.icon} className="w-5 h-5 text-slate-700 dark:text-slate-300" />
@@ -361,7 +368,9 @@ export function KnowledgePage() {
               </div>
               <span className={`w-2 h-2 rounded-full ${s.status === 'connected' ? 'bg-emerald-500' : 'bg-slate-400'}`} />
             </div>
-            <button onClick={() => addToast('Configure (demo)', 'info')} className="btn-secondary text-xs w-full justify-center">Configure</button>
+            <button onClick={() => toggleKnowledgeConnection(s.id)} className="btn-secondary text-xs w-full justify-center">
+              {s.status === 'connected' ? 'Disconnect' : 'Connect'}
+            </button>
           </div>
         ))}
       </div>
@@ -488,6 +497,9 @@ function maskValue(value: string): string {
 export function CredentialsPage() {
   const credentials = useStore((s) => s.credentials);
   const updateCredential = useStore((s) => s.updateCredential);
+  const addCredential = useStore((s) => s.addCredential);
+  const rotateCredential = useStore((s) => s.rotateCredential);
+  const deleteCredential = useStore((s) => s.deleteCredential);
   const addToast = useStore((s) => s.addToast);
   const [editingCred, setEditingCred] = useState<Credential | null>(null);
   const [config, setConfig] = useState<CredentialConfig>(DEFAULT_CRED_CONFIG);
@@ -558,7 +570,10 @@ export function CredentialsPage() {
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Credentials</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">{credentials.length} credentials · Securely stored and masked</p>
         </div>
-        <button onClick={() => addToast('Add credential (demo)', 'info')} className="btn-primary"><Plus className="w-4 h-4" /> Add Credential</button>
+        <button onClick={() => {
+          const created = addCredential();
+          void openEdit(created);
+        }} className="btn-primary"><Plus className="w-4 h-4" /> Add Credential</button>
       </div>
       <div className="card overflow-hidden">
         <table className="w-full text-sm">
@@ -584,9 +599,9 @@ export function CredentialsPage() {
                 <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">{c.lastRotatedAt?.slice(0, 10) ?? '—'}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1">
-                    <button onClick={() => addToast('Rotate credential (demo)', 'info')} className="btn-ghost p-1.5" aria-label={`Rotate ${c.name}`}><RotateCw className="w-4 h-4" /></button>
+                    <button onClick={() => rotateCredential(c.id)} className="btn-ghost p-1.5" aria-label={`Rotate ${c.name}`}><RotateCw className="w-4 h-4" /></button>
                     <button onClick={() => openEdit(c)} className="btn-ghost p-1.5" aria-label={`Edit ${c.name}`}><Edit3 className="w-4 h-4" /></button>
-                    <button onClick={() => addToast('Delete (demo)', 'info')} className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${c.name}`}><Trash2 className="w-4 h-4" /></button>
+                    <button onClick={() => deleteCredential(c.id)} className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${c.name}`}><Trash2 className="w-4 h-4" /></button>
                   </div>
                 </td>
               </tr>
@@ -669,7 +684,7 @@ export function CredentialsPage() {
 // ============================================================================
 export function EvaluationsPage() {
   const evaluations = useStore((s) => s.evaluations);
-  const addToast = useStore((s) => s.addToast);
+  const addEvaluation = useStore((s) => s.addEvaluation);
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 animate-fade-in">
@@ -678,7 +693,7 @@ export function EvaluationsPage() {
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Evaluations</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">{evaluations.length} evaluations · Test agent quality</p>
         </div>
-        <button onClick={() => addToast('Create evaluation (demo)', 'info')} className="btn-primary"><Plus className="w-4 h-4" /> New Evaluation</button>
+        <button onClick={() => addEvaluation()} className="btn-primary"><Plus className="w-4 h-4" /> New Evaluation</button>
       </div>
       <div className="space-y-4">
         {evaluations.map((ev) => <EvaluationCard key={ev.id} ev={ev} />)}
@@ -689,6 +704,8 @@ export function EvaluationsPage() {
 
 function EvaluationCard({ ev }: { ev: Evaluation }) {
   const addToast = useStore((s) => s.addToast);
+  const runEvaluation = useStore((s) => s.runEvaluation);
+  const approveEvaluation = useStore((s) => s.approveEvaluation);
   return (
     <div className="card p-5">
       <div className="flex items-center justify-between mb-4">
@@ -715,11 +732,19 @@ function EvaluationCard({ ev }: { ev: Evaluation }) {
         </div>
       )}
       <div className="flex gap-2">
-        <button onClick={() => addToast('Run evaluation (demo)', 'info')} className="btn-secondary text-sm"><Play className="w-3.5 h-3.5" /> Run</button>
-        <button onClick={() => addToast('Compare versions (demo)', 'info')} className="btn-secondary text-sm"><GitCompare className="w-3.5 h-3.5" /> Compare</button>
-        <button onClick={() => addToast('Export results (demo)', 'info')} className="btn-secondary text-sm"><Download className="w-3.5 h-3.5" /> Export</button>
+        <button onClick={() => runEvaluation(ev.id)} disabled={ev.status === 'running'} className="btn-secondary text-sm"><Play className="w-3.5 h-3.5" /> Run</button>
+        <button onClick={() => addToast(
+          ev.averageAccuracy != null
+            ? `${ev.name}: ${(ev.averageAccuracy * 100).toFixed(0)}% accuracy vs 80% baseline`
+            : 'Run the evaluation before comparing',
+          ev.averageAccuracy != null ? 'info' : 'error',
+        )} className="btn-secondary text-sm"><GitCompare className="w-3.5 h-3.5" /> Compare</button>
+        <button onClick={() => {
+          downloadText(`${ev.name.replace(/\s+/g, '-').toLowerCase()}-results.json`, JSON.stringify(ev, null, 2));
+          addToast(`Exported ${ev.name}`, 'success');
+        }} className="btn-secondary text-sm"><Download className="w-3.5 h-3.5" /> Export</button>
         {!ev.approvedForProduction && ev.status === 'completed' && (
-          <button onClick={() => addToast('Approved for production (demo)', 'success')} className="btn-primary text-sm ml-auto"><CheckCircle2 className="w-3.5 h-3.5" /> Approve for Production</button>
+          <button onClick={() => approveEvaluation(ev.id)} className="btn-primary text-sm ml-auto"><CheckCircle2 className="w-3.5 h-3.5" /> Approve for Production</button>
         )}
       </div>
     </div>

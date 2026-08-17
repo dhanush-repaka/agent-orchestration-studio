@@ -6,6 +6,7 @@ import {
   Download, ChevronDown, ChevronRight, AlertCircle, User, Cpu, Wrench,
   BookOpen, Quote,
 } from 'lucide-react';
+import { downloadText } from '@/lib/download';
 import type { NodeExecution } from '@/types';
 
 export function RunDetailsPage() {
@@ -33,13 +34,7 @@ export function RunDetailsPage() {
 
   const handleDownloadLogs = () => {
     const text = run.logs.map((l) => `[${l.timestamp}] [${l.level.toUpperCase()}] [${l.source}] ${l.message}`).join('\n');
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `run-${run.id}-logs.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadText(`run-${run.id}-logs.txt`, text, 'text/plain');
     addToast('Logs downloaded', 'success');
   };
 

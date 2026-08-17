@@ -2,11 +2,13 @@ import { create } from 'zustand';
 import { executeWorkflow } from '@/lib/engine';
 import type {
   Agent, Workflow, WorkflowRun, Environment, NodeStatus,
-  WorkflowNode, WorkflowEdge,
+  WorkflowNode, WorkflowEdge, Prompt, Credential, Integration,
+  Evaluation, KnowledgeConnection, AuditLog,
 } from '@/types';
 import {
   AGENTS, WORKFLOWS, WORKFLOW_RUNS, PROMPTS, CREDENTIALS,
   INTEGRATIONS, EVALUATIONS, AUDIT_LOGS, USERS, CURRENT_USER,
+  KNOWLEDGE_CONNECTIONS,
 } from '@/data/mock';
 import { supabase } from '@/lib/supabase';
 import { syncPageToUrl, pageFromPath } from '@/lib/routes';
@@ -14,6 +16,7 @@ import { sanitizeWorkflowGraph } from '@/lib/graph';
 import { uniquePrefixedId } from '@/lib/ids';
 import { logStoreError } from '@/lib/network';
 import { resolveRerunInput } from '@/lib/rerun';
+import { interpolate } from '@/lib/interpolate';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -142,11 +145,12 @@ interface AppState {
   agents: Agent[];
   workflows: Workflow[];
   runs: WorkflowRun[];
-  prompts: typeof PROMPTS;
-  credentials: typeof CREDENTIALS;
-  integrations: typeof INTEGRATIONS;
-  evaluations: typeof EVALUATIONS;
-  auditLogs: typeof AUDIT_LOGS;
+  prompts: Prompt[];
+  credentials: Credential[];
+  integrations: Integration[];
+  evaluations: Evaluation[];
+  knowledgeConnections: KnowledgeConnection[];
+  auditLogs: AuditLog[];
   users: typeof USERS;
   currentUser: typeof CURRENT_USER;
 
@@ -164,8 +168,22 @@ interface AppState {
   deleteAgent: (id: string) => void;
   cloneAgent: (id: string) => void;
 
-  // credential CRUD
-  updateCredential: (id: string, patch: Partial<typeof CREDENTIALS[number]>) => void;
+  // credential / resource CRUD
+  updateCredential: (id: string, patch: Partial<Credential>) => void;
+  addCredential: () => Credential;
+  rotateCredential: (id: string) => void;
+  deleteCredential: (id: string) => void;
+  addIntegration: () => Integration;
+  testIntegration: (id: string) => void;
+  rotateIntegration: (id: string) => void;
+  deleteIntegration: (id: string) => void;
+  addPrompt: () => Prompt;
+  testPrompt: (id: string) => string;
+  addKnowledgeConnection: () => KnowledgeConnection;
+  toggleKnowledgeConnection: (id: string) => void;
+  addEvaluation: () => Evaluation;
+  runEvaluation: (id: string) => void;
+  approveEvaluation: (id: string) => void;
 
   // user CRUD
   updateUser: (id: string, patch: Partial<typeof USERS[number]>) => void;
@@ -281,6 +299,7 @@ export const useStore = create<AppState>((set, get) => ({
   credentials: CREDENTIALS,
   integrations: INTEGRATIONS,
   evaluations: EVALUATIONS,
+  knowledgeConnections: KNOWLEDGE_CONNECTIONS,
   auditLogs: AUDIT_LOGS,
   users: USERS,
   currentUser: CURRENT_USER,
@@ -334,8 +353,201 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   updateCredential: (id, patch) => set((s) => ({
-    credentials: s.credentials.map((c) => (c.id === id ? { ...c, ...patch, lastRotatedAt: new Date().toISOString() } : c)),
+    credentials: s.credentials.map((c) => (c.id === id ? { ...c, ...patch } : c)),
   })),
+  addCredential: () => {
+    const id = uniquePrefixedId('c', get().credentials.map((c) => c.id));
+    const cred: Credential = {
+      id,
+      name: 'New Credential',
+      type: 'api-key',
+      maskedValue: '—',
+      workflowsUsing: 0,
+      environment: get().environment,
+    };
+    set((s) => ({ credentials: [cred, ...s.credentials] }));
+    get().addToast('Credential created', 'success');
+    return cred;
+  },
+  rotateCredential: (id) => {
+    const cred = get().credentials.find((c) => c.id === id);
+    if (!cred) return;
+    get().updateCredential(id, { lastRotatedAt: new Date().toISOString(), maskedValue: '••••••••••••new' });
+    get().addToast(`Rotated ${cred.name}`, 'success');
+  },
+  deleteCredential: (id) => {
+    const cred = get().credentials.find((c) => c.id === id);
+    if (!cred) return;
+    if (cred.workflowsUsing > 0) {
+      get().addToast(`${cred.name} is used by ${cred.workflowsUsing} workflow(s)`, 'error');
+      return;
+    }
+    set((s) => ({ credentials: s.credentials.filter((c) => c.id !== id) }));
+    get().addToast(`Deleted ${cred.name}`, 'success');
+  },
+  addIntegration: () => {
+    const id = uniquePrefixedId('i', get().integrations.map((i) => i.id));
+    const int: Integration = {
+      id,
+      name: 'New Connection',
+      icon: 'Network',
+      authType: 'API Key',
+      status: 'disconnected',
+      workflowsUsing: 0,
+    };
+    set((s) => ({ integrations: [int, ...s.integrations] }));
+    get().addToast('Connection created', 'success');
+    return int;
+  },
+  testIntegration: (id) => {
+    const int = get().integrations.find((i) => i.id === id);
+    if (!int) return;
+    set((s) => ({
+      integrations: s.integrations.map((i) => i.id === id
+        ? { ...i, status: 'connected', lastTestedAt: new Date().toISOString() }
+        : i),
+    }));
+    get().addToast(`${int.name} connection test passed`, 'success');
+  },
+  rotateIntegration: (id) => {
+    const int = get().integrations.find((i) => i.id === id);
+    if (!int) return;
+    set((s) => ({
+      integrations: s.integrations.map((i) => i.id === id
+        ? { ...i, lastTestedAt: new Date().toISOString() }
+        : i),
+    }));
+    get().addToast(`Rotated connection credential for ${int.name}`, 'success');
+  },
+  deleteIntegration: (id) => {
+    const int = get().integrations.find((i) => i.id === id);
+    if (!int) return;
+    if (int.workflowsUsing > 0) {
+      get().addToast(`${int.name} is used by ${int.workflowsUsing} workflow(s)`, 'error');
+      return;
+    }
+    set((s) => ({ integrations: s.integrations.filter((i) => i.id !== id) }));
+    get().addToast(`Deleted ${int.name}`, 'success');
+  },
+  addPrompt: () => {
+    const id = uniquePrefixedId('p', get().prompts.map((p) => p.id));
+    const prompt: Prompt = {
+      id,
+      name: 'New Prompt',
+      category: 'General',
+      description: 'Draft prompt template',
+      systemPrompt: 'You are a helpful assistant.',
+      userPrompt: 'Process: {{workflow_input}}',
+      variables: ['{{workflow_input}}'],
+      version: '0.1.0',
+      owner: get().currentUser.name,
+      tags: ['draft'],
+      usageCount: 0,
+      updatedAt: new Date().toISOString(),
+    };
+    set((s) => ({ prompts: [prompt, ...s.prompts] }));
+    get().addToast('Prompt created', 'success');
+    return prompt;
+  },
+  testPrompt: (id) => {
+    const prompt = get().prompts.find((p) => p.id === id);
+    if (!prompt) return '';
+    const sample = interpolate(prompt.userPrompt, {
+      workflowInput: { workItemId: 21 },
+      previousOutput: { ok: true },
+      knowledge: 'QE standards',
+      nodes: {},
+    });
+    set((s) => ({
+      prompts: s.prompts.map((p) => p.id === id ? { ...p, usageCount: p.usageCount + 1 } : p),
+    }));
+    get().addToast(`Tested ${prompt.name}`, 'success');
+    return sample;
+  },
+  addKnowledgeConnection: () => {
+    const id = uniquePrefixedId('k', get().knowledgeConnections.map((k) => k.id));
+    const source: KnowledgeConnection = {
+      id,
+      name: 'New Knowledge Source',
+      icon: 'BookOpen',
+      status: 'disconnected',
+      collections: 0,
+    };
+    set((s) => ({ knowledgeConnections: [source, ...s.knowledgeConnections] }));
+    get().addToast('Knowledge source added', 'success');
+    return source;
+  },
+  toggleKnowledgeConnection: (id) => {
+    const src = get().knowledgeConnections.find((k) => k.id === id);
+    if (!src) return;
+    const next = src.status === 'connected' ? 'disconnected' : 'connected';
+    set((s) => ({
+      knowledgeConnections: s.knowledgeConnections.map((k) => k.id === id
+        ? { ...k, status: next, collections: next === 'connected' ? Math.max(1, k.collections) : k.collections }
+        : k),
+    }));
+    get().addToast(`${src.name} ${next}`, 'success');
+  },
+  addEvaluation: () => {
+    const agent = get().agents.find((a) => a.persisted !== false) ?? get().agents[0];
+    const id = uniquePrefixedId('e', get().evaluations.map((e) => e.id));
+    const ev: Evaluation = {
+      id,
+      name: `${agent?.displayName ?? 'Agent'} eval`,
+      agentId: agent?.id ?? 'a1',
+      agentName: agent?.displayName ?? 'Agent',
+      status: 'draft',
+      createdAt: new Date().toISOString(),
+      cases: [
+        { id: `${id}-c1`, input: '{"workItemId":21}', expectedOutput: '{"ok":true}' },
+      ],
+    };
+    set((s) => ({ evaluations: [ev, ...s.evaluations] }));
+    get().addToast('Evaluation created', 'success');
+    return ev;
+  },
+  runEvaluation: (id) => {
+    const ev = get().evaluations.find((e) => e.id === id);
+    if (!ev) return;
+    set((s) => ({
+      evaluations: s.evaluations.map((e) => e.id === id ? { ...e, status: 'running' } : e),
+    }));
+    window.setTimeout(() => {
+      set((s) => ({
+        evaluations: s.evaluations.map((e) => {
+          if (e.id !== id) return e;
+          const cases = e.cases.map((c, i) => ({
+            ...c,
+            actualOutput: c.expectedOutput,
+            accuracy: 0.82 + (i % 3) * 0.04,
+            relevance: 0.8,
+            groundedness: 0.78,
+            hallucinationScore: 0.08,
+            citationScore: 0.85,
+            safetyScore: 1,
+            responseTimeMs: 2500 + i * 200,
+            tokenUsage: 1800,
+            cost: 0.04,
+          }));
+          const averageAccuracy = cases.reduce((a, c) => a + (c.accuracy ?? 0), 0) / Math.max(cases.length, 1);
+          return { ...e, status: 'completed' as const, cases, averageAccuracy };
+        }),
+      }));
+      get().addToast(`Finished ${ev.name}`, 'success');
+    }, 700);
+  },
+  approveEvaluation: (id) => {
+    const ev = get().evaluations.find((e) => e.id === id);
+    if (!ev) return;
+    if (ev.status !== 'completed') {
+      get().addToast('Run the evaluation before approving', 'error');
+      return;
+    }
+    set((s) => ({
+      evaluations: s.evaluations.map((e) => e.id === id ? { ...e, approvedForProduction: true } : e),
+    }));
+    get().addToast(`${ev.name} approved for production`, 'success');
+  },
 
   updateUser: (id, patch) => set((s) => ({
     users: s.users.map((u) => (u.id === id ? { ...u, ...patch } : u)),

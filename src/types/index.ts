@@ -116,6 +116,14 @@ export interface KnowledgeSource {
   citationRequired?: boolean;
 }
 
+export interface KnowledgeConnection {
+  id: string;
+  name: string;
+  icon: string;
+  status: 'connected' | 'disconnected';
+  collections: number;
+}
+
 export interface MemoryConfiguration {
   type: MemoryType;
   key?: string;

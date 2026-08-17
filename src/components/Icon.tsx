@@ -5,6 +5,7 @@ import {
   UserCheck, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Wand2, Filter,
   Map, Braces, File, Globe, Boxes, Github, Network, FolderOpen, Mail,
   MessageSquare, Hash, BarChart3, Webhook, Cpu, Sparkles, Brain, Settings, Upload,
+  BookOpen,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -14,7 +15,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   Shuffle, Route, Repeat, GitMerge, Combine, Clock, RotateCw, UserCheck,
   AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Wand2, Filter, Map,
   Braces, File, Globe, Boxes, Github, Network, FolderOpen, Mail,
-  MessageSquare, Hash, BarChart3, Webhook, Cpu, Sparkles, Brain, Settings, Upload,
+  MessageSquare, Hash, BarChart3, Webhook, Cpu, Sparkles, Brain, Settings, Upload, BookOpen,
 };
 
 export function Icon({ name, ...props }: { name: string } & LucideProps) {

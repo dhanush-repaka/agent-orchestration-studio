@@ -1,6 +1,6 @@
 import type {
   Agent, Workflow, WorkflowRun, Prompt, Credential, Integration,
-  Evaluation, AuditLog, User, NodeExecution, LogEntry,
+  Evaluation, AuditLog, User, NodeExecution, LogEntry, KnowledgeConnection,
 } from '@/types';
 
 // ----------------------------------------------------------------------------
@@ -600,6 +600,15 @@ export const INTEGRATIONS: Integration[] = [
   { id: 'i4', name: 'SharePoint', icon: 'FolderOpen', authType: 'OAuth 2.0', status: 'error', lastTestedAt: '2025-07-20T08:00:00Z', workflowsUsing: 1 },
   { id: 'i5', name: 'Slack', icon: 'Hash', authType: 'Bot Token', status: 'connected', lastTestedAt: '2025-07-22T08:00:00Z', workflowsUsing: 1 },
   { id: 'i6', name: 'Power BI', icon: 'BarChart3', authType: 'Service Principal', status: 'disconnected', workflowsUsing: 0 },
+];
+
+export const KNOWLEDGE_CONNECTIONS: KnowledgeConnection[] = [
+  { id: 'k1', name: 'SharePoint', icon: 'FolderOpen', status: 'connected', collections: 5 },
+  { id: 'k2', name: 'Azure DevOps', icon: 'Boxes', status: 'connected', collections: 12 },
+  { id: 'k3', name: 'Confluence', icon: 'BookOpen', status: 'disconnected', collections: 0 },
+  { id: 'k4', name: 'Google Drive', icon: 'File', status: 'connected', collections: 3 },
+  { id: 'k5', name: 'Vector Database', icon: 'Database', status: 'connected', collections: 8 },
+  { id: 'k6', name: 'SQL Database', icon: 'Database', status: 'connected', collections: 4 },
 ];
 
 // ----------------------------------------------------------------------------
