@@ -564,5 +564,6 @@ export async function executeWorkflow(opts: {
     estimatedCost,
     nodeExecutions,
     logs,
+    runtimeInput: typeof inputJson === 'string' ? inputJson : stringifyOutput(inputJson),
   };
 }

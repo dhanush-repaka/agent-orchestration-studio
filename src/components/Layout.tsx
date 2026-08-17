@@ -64,6 +64,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const toggleTheme = useStore((s) => s.toggleTheme);
   const environment = useStore((s) => s.environment);
   const setEnvironment = useStore((s) => s.setEnvironment);
+  const workspaceName = useStore((s) => s.workspaceName);
   const currentUser = useStore((s) => s.currentUser);
   const runs = useStore((s) => s.runs);
   const agents = useStore((s) => s.agents);
@@ -115,7 +116,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {/* Workspace */}
         <div className="hidden xl:flex items-center gap-1.5 ml-2 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300">
           <span className="w-2 h-2 rounded-full bg-emerald-500" />
-          QE Workspace
+          {workspaceName}
         </div>
 
         {/* Environment selector */}

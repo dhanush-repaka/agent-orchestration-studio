@@ -13,6 +13,8 @@ export function RunDetailsPage() {
   const selectedRunId = useStore((s) => s.selectedRunId);
   const setPage = useStore((s) => s.setPage);
   const addToast = useStore((s) => s.addToast);
+  const rerunFrom = useStore((s) => s.rerunFrom);
+  const runningWorkflowId = useStore((s) => s.runningWorkflowId);
 
   const run = runs.find((r) => r.id === selectedRunId);
   const [expandedNode, setExpandedNode] = useState<string | null>(null);
@@ -54,8 +56,22 @@ export function RunDetailsPage() {
           <p className="text-sm text-slate-500 dark:text-slate-400">{run.workflowName} · v{run.workflowVersion} · {run.id}</p>
         </div>
         <div className="ml-auto flex gap-2">
-          <button onClick={() => addToast('Retrying failed node (demo)', 'info')} className="btn-secondary"><RotateCw className="w-4 h-4" /> Retry Failed</button>
-          <button onClick={() => addToast('Re-running workflow (demo)', 'info')} className="btn-secondary"><Play className="w-4 h-4" /> Re-run</button>
+          <button
+            onClick={() => rerunFrom(run.id)}
+            disabled={run.status !== 'failed' || !!runningWorkflowId}
+            className="btn-secondary"
+            aria-label="Retry failed run"
+          >
+            <RotateCw className="w-4 h-4" /> Retry Failed
+          </button>
+          <button
+            onClick={() => rerunFrom(run.id)}
+            disabled={!!runningWorkflowId}
+            className="btn-secondary"
+            aria-label="Re-run workflow"
+          >
+            <Play className="w-4 h-4" /> Re-run
+          </button>
           <button onClick={handleDownloadLogs} className="btn-secondary"><Download className="w-4 h-4" /> Logs</button>
         </div>
       </div>

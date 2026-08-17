@@ -11,31 +11,9 @@ import {
 import { supabase } from '@/lib/supabase';
 import { syncPageToUrl, pageFromPath } from '@/lib/routes';
 import { sanitizeWorkflowGraph } from '@/lib/graph';
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'object' && err !== null && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
-    return (err as { message: string }).message;
-  }
-  return String(err);
-}
-
-function isTransientNetworkError(err: unknown): boolean {
-  const name = typeof err === 'object' && err !== null && 'name' in err ? String((err as { name: unknown }).name) : '';
-  if (name === 'AbortError' || name === 'TimeoutError') return true;
-  const msg = errorMessage(err).toLowerCase();
-  return (
-    msg.includes('failed to fetch') ||
-    msg.includes('networkerror') ||
-    msg.includes('network request failed') ||
-    msg.includes('aborted')
-  );
-}
-
-function logStoreError(action: string, err: unknown) {
-  if (isTransientNetworkError(err)) return;
-  console.error(`${action}:`, errorMessage(err));
-}
+import { uniquePrefixedId } from '@/lib/ids';
+import { logStoreError } from '@/lib/network';
+import { resolveRerunInput } from '@/lib/rerun';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -156,6 +134,9 @@ interface AppState {
   toggleTheme: () => void;
   environment: Environment;
   setEnvironment: (e: Environment) => void;
+  workspaceName: string;
+  defaultLoggingLevel: 'debug' | 'info' | 'warning' | 'error';
+  saveWorkspaceSettings: (patch: { name?: string; environment?: Environment; loggingLevel?: 'debug' | 'info' | 'warning' | 'error' }) => void;
 
   // data
   agents: Agent[];
@@ -201,6 +182,7 @@ interface AppState {
   runStatus: Record<string, NodeStatus>;
   pendingApproval: { workflowId: string; nodeId: string; label: string } | null;
   startRun: (workflowId: string, runtimeInput?: string) => void;
+  rerunFrom: (runId: string) => void;
   cancelRun: () => void;
   approveRun: () => void;
   rejectRun: () => void;
@@ -216,30 +198,35 @@ interface AppState {
 }
 
 let toastId = 0;
-let agentIdCounter = 100;
-let wfIdCounter = 100;
 let runGeneration = 0;
 let approvalWait: { resolve: (ok: boolean) => void } | null = null;
 
-function maxNumericId(prefix: string, ids: string[], fallback: number): number {
-  let max = fallback;
-  for (const id of ids) {
-    if (!id.startsWith(prefix)) continue;
-    const n = Number(id.slice(prefix.length));
-    if (Number.isFinite(n) && n > max) max = n;
-  }
-  return max;
-}
+const WS_SETTINGS_KEY = 'aos-workspace-settings';
+const INITIAL_WORKSPACE = loadWorkspaceSettingsEarly();
 
-function uniquePrefixedId(prefix: 'a' | 'w', taken: Iterable<string>): string {
-  const set = new Set(taken);
-  if (prefix === 'a') agentIdCounter = maxNumericId('a', [...set], agentIdCounter);
-  else wfIdCounter = maxNumericId('w', [...set], wfIdCounter);
-  let id = prefix === 'a' ? `a${++agentIdCounter}` : `w${++wfIdCounter}`;
-  while (set.has(id)) {
-    id = prefix === 'a' ? `a${++agentIdCounter}` : `w${++wfIdCounter}`;
+function loadWorkspaceSettingsEarly(): {
+  name: string;
+  loggingLevel: 'debug' | 'info' | 'warning' | 'error';
+  environment?: Environment;
+} {
+  const fallback = { name: 'QE Workspace', loggingLevel: 'info' as const };
+  if (typeof localStorage === 'undefined') return fallback;
+  try {
+    const raw = localStorage.getItem(WS_SETTINGS_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as { name?: string; loggingLevel?: string; environment?: string };
+    const loggingLevel = parsed.loggingLevel;
+    const env = parsed.environment;
+    return {
+      name: parsed.name?.trim() || fallback.name,
+      loggingLevel: loggingLevel === 'debug' || loggingLevel === 'warning' || loggingLevel === 'error' || loggingLevel === 'info'
+        ? loggingLevel
+        : fallback.loggingLevel,
+      environment: env === 'development' || env === 'qa' || env === 'uat' || env === 'production' ? env : undefined,
+    };
+  } catch {
+    return fallback;
   }
-  return id;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -272,8 +259,20 @@ export const useStore = create<AppState>((set, get) => ({
     }
     return { theme: next };
   }),
-  environment: 'production',
+  environment: INITIAL_WORKSPACE.environment ?? 'production',
   setEnvironment: (e) => set({ environment: e }),
+  workspaceName: INITIAL_WORKSPACE.name,
+  defaultLoggingLevel: INITIAL_WORKSPACE.loggingLevel,
+  saveWorkspaceSettings: (patch) => {
+    const nextName = patch.name?.trim() || get().workspaceName;
+    const nextEnv = patch.environment ?? get().environment;
+    const nextLog = patch.loggingLevel ?? get().defaultLoggingLevel;
+    set({ workspaceName: nextName, environment: nextEnv, defaultLoggingLevel: nextLog });
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(WS_SETTINGS_KEY, JSON.stringify({ name: nextName, loggingLevel: nextLog, environment: nextEnv }));
+    }
+    get().addToast('Workspace settings saved', 'success');
+  },
 
   agents: AGENTS,
   workflows: WORKFLOWS,
@@ -439,6 +438,25 @@ export const useStore = create<AppState>((set, get) => ({
       get().addToast(err instanceof Error ? err.message : 'Workflow failed', 'error');
     });
   },
+  rerunFrom: (runId) => {
+    const run = get().runs.find((r) => r.id === runId);
+    if (!run) {
+      get().addToast('Run not found', 'error');
+      return;
+    }
+    const wf = get().workflows.find((w) => w.id === run.workflowId);
+    if (!wf) {
+      get().addToast('Workflow no longer exists', 'error');
+      return;
+    }
+    if (get().runningWorkflowId) {
+      get().addToast('A workflow is already running', 'error');
+      return;
+    }
+    set({ selectedWorkflowId: wf.id });
+    get().startRun(wf.id, resolveRerunInput(run, wf));
+    get().setPage('workflow-builder');
+  },
     cancelRun: () => {
     runGeneration += 1;
     approvalWait?.resolve(false);
@@ -508,9 +526,10 @@ export const useStore = create<AppState>((set, get) => ({
 
 // Helper: generate a new agent skeleton
 export function newAgentSkeleton(): Agent {
-  const idNum = ++agentIdCounter;
+  const id = uniquePrefixedId('a', useStore.getState().agents.map((a) => a.id));
+  const idNum = id.slice(1);
   return {
-    id: `a${idNum}`,
+    id,
     name: `untitled-agent-${idNum}`,
     displayName: 'Untitled Agent',
     description: '',
@@ -557,7 +576,7 @@ export function newAgentSkeleton(): Agent {
 
 export function newWorkflowSkeleton(): Workflow {
   return {
-    id: `w${++wfIdCounter}`,
+    id: uniquePrefixedId('w', useStore.getState().workflows.map((w) => w.id)),
     name: 'New Workflow',
     description: '',
     category: 'General',

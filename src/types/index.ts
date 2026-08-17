@@ -368,6 +368,7 @@ export interface WorkflowRun {
   estimatedCost: number;
   nodeExecutions: NodeExecution[];
   logs: LogEntry[];
+  runtimeInput?: string;
 }
 
 export interface Prompt {

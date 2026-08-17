@@ -536,6 +536,7 @@ export const WORKFLOW_RUNS: WorkflowRun[] = [
     workflowVersion: '1.2.0', status: 'failed', triggeredBy: 'Priya Sharma',
     environment: 'production', startTime: '2025-07-22T08:30:00Z', endTime: '2025-07-22T08:31:15Z',
     durationMs: 75000, totalTokens: 9200, estimatedCost: 0.21,
+    runtimeInput: '{"workItemId": 21}',
     nodeExecutions: [
       makeNodeExec('n1', 'Manual Input', undefined, 'completed', 0, 0, 100),
       makeNodeExec('n2', 'ADO Work Item Retrieval', 'ADO Work Item Retrieval Agent', 'completed', 1200, 0.02, 2100),

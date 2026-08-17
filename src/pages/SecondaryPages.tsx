@@ -872,12 +872,19 @@ export function SettingsPage() {
   const users = useStore((s) => s.users);
   const updateUser = useStore((s) => s.updateUser);
   const addToast = useStore((s) => s.addToast);
+  const workspaceName = useStore((s) => s.workspaceName);
+  const environment = useStore((s) => s.environment);
+  const defaultLoggingLevel = useStore((s) => s.defaultLoggingLevel);
+  const saveWorkspaceSettings = useStore((s) => s.saveWorkspaceSettings);
   const [editingUser, setEditingUser] = useState<typeof users[number] | null>(null);
   const [editName, setEditName] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editRole, setEditRole] = useState<typeof users[number]['role']>('Viewer');
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [wsName, setWsName] = useState(workspaceName);
+  const [wsEnv, setWsEnv] = useState(environment);
+  const [wsLog, setWsLog] = useState(defaultLoggingLevel);
 
   const openEdit = useCallback(async (u: typeof users[number]) => {
     setEditingUser(u);
@@ -1047,15 +1054,30 @@ export function SettingsPage() {
         </div>
         <div className="space-y-4">
           <Field label="Workspace Name">
-            <input className="input" defaultValue="QE Workspace" />
+            <input className="input" value={wsName} onChange={(e) => setWsName(e.target.value)} />
           </Field>
           <Field label="Default Environment">
-            <select className="input"><option>Production</option><option>UAT</option><option>QA</option><option>Development</option></select>
+            <select className="input" value={wsEnv} onChange={(e) => setWsEnv(e.target.value as typeof wsEnv)}>
+              <option value="production">Production</option>
+              <option value="uat">UAT</option>
+              <option value="qa">QA</option>
+              <option value="development">Development</option>
+            </select>
           </Field>
           <Field label="Default Logging Level">
-            <select className="input"><option>Info</option><option>Debug</option><option>Warning</option><option>Error</option></select>
+            <select className="input" value={wsLog} onChange={(e) => setWsLog(e.target.value as typeof wsLog)}>
+              <option value="info">Info</option>
+              <option value="debug">Debug</option>
+              <option value="warning">Warning</option>
+              <option value="error">Error</option>
+            </select>
           </Field>
-          <button onClick={() => addToast('Settings saved', 'success')} className="btn-primary"><Save className="w-4 h-4" /> Save Settings</button>
+          <button
+            onClick={() => saveWorkspaceSettings({ name: wsName, environment: wsEnv, loggingLevel: wsLog })}
+            className="btn-primary"
+          >
+            <Save className="w-4 h-4" /> Save Settings
+          </button>
         </div>
       </div>
     </div>
