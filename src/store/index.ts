@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import { executeWorkflow } from '@/lib/engine';
+import { executeWorkflow, type ReplayResume } from '@/lib/engine';
 import type {
-  Agent, Workflow, WorkflowRun, Environment, NodeStatus,
+  Agent, Workflow, WorkflowRun, Environment, NodeStatus, RunStatus,
   WorkflowNode, WorkflowEdge, Prompt, Credential, Integration,
   Evaluation, KnowledgeConnection, AuditLog,
 } from '@/types';
@@ -16,9 +16,11 @@ import { sanitizeWorkflowGraph } from '@/lib/graph';
 import { uniquePrefixedId } from '@/lib/ids';
 import { logStoreError, isMissingRelation, isTransientNetworkError } from '@/lib/network';
 import { resolveRerunInput } from '@/lib/rerun';
+import { replaySeed } from '@/lib/replay';
 import { interpolate } from '@/lib/interpolate';
 import { loadCatalogs, saveCatalogs, type CatalogSnapshot } from '@/lib/catalog';
 import { isScheduleDue } from '@/lib/cron';
+import { callEdgeFunction } from '@/lib/api';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -200,10 +202,12 @@ interface AppState {
 
   // execution
   runningWorkflowId: string | null;
+  serverRunId: string | null;
   runStatus: Record<string, NodeStatus>;
   pendingApproval: { workflowId: string; nodeId: string; label: string } | null;
-  startRun: (workflowId: string, runtimeInput?: string) => void;
+  startRun: (workflowId: string, runtimeInput?: string, resume?: ReplayResume) => void;
   rerunFrom: (runId: string) => void;
+  replayFrom: (runId: string, nodeId: string) => void;
   cancelRun: () => void;
   approveRun: () => void;
   rejectRun: () => void;
@@ -224,6 +228,14 @@ interface AppState {
 let toastId = 0;
 let runGeneration = 0;
 let approvalWait: { resolve: (ok: boolean) => void } | null = null;
+
+function isTerminalRun(status: RunStatus) {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function catalogSnapshot(s: {
   prompts: CatalogSnapshot['prompts'];
@@ -677,49 +689,143 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   runningWorkflowId: null,
+  serverRunId: null,
   runStatus: {},
   pendingApproval: null,
-  startRun: (workflowId, runtimeInput) => {
+  startRun: (workflowId, runtimeInput, resume) => {
     const wf = get().workflows.find((w) => w.id === workflowId);
     if (!wf) return;
     const statusMap: Record<string, NodeStatus> = {};
-    wf.nodes.forEach((n) => { statusMap[n.id] = 'ready'; });
+    wf.nodes.forEach((n) => {
+      statusMap[n.id] = resume?.nodeOutputs[n.id] ? 'completed' : 'ready';
+    });
+    if (resume) statusMap[resume.fromNodeId] = 'ready';
     runGeneration += 1;
     const gen = runGeneration;
     approvalWait = null;
-    set({ runningWorkflowId: workflowId, runStatus: statusMap, pendingApproval: null });
+    const runId = `r${Date.now()}`;
+    const triggeredBy = get().currentUser.name;
+    const stub: WorkflowRun = {
+      id: runId,
+      workflowId: wf.id,
+      workflowName: wf.name,
+      workflowVersion: wf.version,
+      status: 'running',
+      triggeredBy,
+      environment: wf.environment,
+      startTime: new Date().toISOString(),
+      totalTokens: 0,
+      estimatedCost: 0,
+      nodeExecutions: resume?.priorExecutions ?? [],
+      logs: [],
+      runtimeInput: runtimeInput ?? wf.defaultInput,
+    };
+    set({
+      runningWorkflowId: workflowId,
+      serverRunId: runId,
+      runStatus: statusMap,
+      pendingApproval: null,
+      runs: [stub, ...get().runs.filter((r) => r.id !== runId)],
+    });
+    persistRun(stub);
 
-    void executeWorkflow({
-      workflow: wf,
-      agents: get().agents,
-      runtimeInput,
-      triggeredBy: get().currentUser.name,
-      callbacks: {
-        isCancelled: () => get().runningWorkflowId !== workflowId || gen !== runGeneration,
-        onNodeStatus: (nodeId, status) => {
-          set((s) => ({ runStatus: { ...s.runStatus, [nodeId]: status } }));
-        },
-        waitForApproval: (nodeId, label) => new Promise<boolean>((resolve) => {
-          approvalWait = { resolve };
-          set({ pendingApproval: { workflowId, nodeId, label } });
-          get().addToast(`Waiting for approval: ${label}`, 'info');
-        }),
-      },
-    }).then((run) => {
+    const finish = (run: WorkflowRun) => {
       if (gen !== runGeneration) return;
       set((s) => ({
         runningWorkflowId: null,
+        serverRunId: null,
         pendingApproval: null,
-        runs: [run, ...s.runs],
+        runs: [run, ...s.runs.filter((r) => r.id !== run.id)],
       }));
       persistRun(run);
       const ok = run.status === 'completed';
       get().addToast(`Workflow ${run.status}`, ok ? 'success' : run.status === 'cancelled' ? 'info' : 'error');
-    }).catch((err) => {
-      if (gen !== runGeneration) return;
-      set({ runningWorkflowId: null, pendingApproval: null });
-      get().addToast(err instanceof Error ? err.message : 'Workflow failed', 'error');
+    };
+
+    const callbacks = {
+      isCancelled: () => get().runningWorkflowId !== workflowId || gen !== runGeneration,
+      onNodeStatus: (nodeId: string, status: NodeStatus) => {
+        set((s) => ({ runStatus: { ...s.runStatus, [nodeId]: status } }));
+      },
+      waitForApproval: (nodeId: string, label: string) => new Promise<boolean>((resolve) => {
+        approvalWait = { resolve };
+        set({ pendingApproval: { workflowId, nodeId, label } });
+        get().addToast(`Waiting for approval: ${label}`, 'info');
+      }),
+    };
+
+    const runLocal = () => executeWorkflow({
+      workflow: wf,
+      agents: get().agents,
+      runtimeInput,
+      triggeredBy,
+      invoke: callEdgeFunction,
+      runId,
+      resume,
+      persistProgress: persistRun,
+      callbacks,
     });
+
+    void (async () => {
+      const { ok, status, data } = await callEdgeFunction<WorkflowRun & { error?: string }>(
+        'execute-workflow',
+        {
+          runId,
+          workflow: wf,
+          agents: get().agents,
+          runtimeInput: runtimeInput ?? wf.defaultInput ?? '{}',
+          triggeredBy,
+          resume: resume ?? null,
+        },
+      );
+      if (gen !== runGeneration) return;
+
+      if (!ok && (status === 0 || status === 404)) {
+        try {
+          finish(await runLocal());
+        } catch (err) {
+          if (gen !== runGeneration) return;
+          set({ runningWorkflowId: null, serverRunId: null, pendingApproval: null });
+          get().addToast(err instanceof Error ? err.message : 'Workflow failed', 'error');
+        }
+        return;
+      }
+
+      if (!ok) {
+        set({ runningWorkflowId: null, serverRunId: null, pendingApproval: null });
+        get().addToast(typeof data?.error === 'string' ? data.error : 'Failed to start run', 'error');
+        return;
+      }
+
+      if (data?.nodeExecutions && data.status && isTerminalRun(data.status)) {
+        finish(data);
+        return;
+      }
+
+      for (let i = 0; i < 180; i++) {
+        if (gen !== runGeneration) return;
+        await sleep(2000);
+        await get().hydrateRuns();
+        const run = get().runs.find((r) => r.id === runId);
+        if (!run) continue;
+        const nextStatus: Record<string, NodeStatus> = { ...get().runStatus };
+        for (const ne of run.nodeExecutions) nextStatus[ne.nodeId] = ne.status;
+        let pending = get().pendingApproval;
+        if (run.status === 'waiting-approval') {
+          const nodeId = run.approvalNodeId ?? run.nodeExecutions.find((n) => n.status === 'waiting-approval')?.nodeId;
+          const label = run.nodeExecutions.find((n) => n.nodeId === nodeId)?.nodeLabel ?? 'Approval';
+          if (nodeId) pending = { workflowId, nodeId, label };
+        } else {
+          pending = null;
+        }
+        set({ runStatus: nextStatus, pendingApproval: pending });
+        if (run.status === 'waiting-approval') continue;
+        if (isTerminalRun(run.status)) {
+          finish(run);
+          return;
+        }
+      }
+    })();
   },
   rerunFrom: (runId) => {
     const run = get().runs.find((r) => r.id === runId);
@@ -740,22 +846,78 @@ export const useStore = create<AppState>((set, get) => ({
     get().startRun(wf.id, resolveRerunInput(run, wf));
     get().setPage('workflow-builder');
   },
-    cancelRun: () => {
+  replayFrom: (runId, nodeId) => {
+    const run = get().runs.find((r) => r.id === runId);
+    if (!run) {
+      get().addToast('Run not found', 'error');
+      return;
+    }
+    const wf = get().workflows.find((w) => w.id === run.workflowId);
+    if (!wf) {
+      get().addToast('Workflow no longer exists', 'error');
+      return;
+    }
+    if (!wf.nodes.some((n) => n.id === nodeId)) {
+      get().addToast('That node is no longer on the workflow', 'error');
+      return;
+    }
+    if (get().runningWorkflowId) {
+      get().addToast('A workflow is already running', 'error');
+      return;
+    }
+    const resume = replaySeed(run, nodeId, wf.edges);
+    const label = wf.nodes.find((n) => n.id === nodeId)?.data.label ?? nodeId;
+    set({ selectedWorkflowId: wf.id });
+    get().startRun(wf.id, resolveRerunInput(run, wf), resume);
+    get().setPage('workflow-builder');
+    get().addToast(`Replaying from ${label}`, 'info');
+  },
+  cancelRun: () => {
     runGeneration += 1;
     approvalWait?.resolve(false);
     approvalWait = null;
-    set({ runningWorkflowId: null, runStatus: {}, pendingApproval: null });
+    const serverRunId = get().serverRunId;
+    if (serverRunId) {
+      const run = get().runs.find((r) => r.id === serverRunId);
+      if (run) persistRun({ ...run, status: 'cancelled', approvalDecision: false });
+    }
+    set({ runningWorkflowId: null, serverRunId: null, runStatus: {}, pendingApproval: null });
     get().addToast('Workflow execution cancelled', 'info');
   },
   approveRun: () => {
     approvalWait?.resolve(true);
     approvalWait = null;
+    const pending = get().pendingApproval;
+    const serverRunId = get().serverRunId;
+    if (serverRunId) {
+      const run = get().runs.find((r) => r.id === serverRunId);
+      if (run) {
+        persistRun({
+          ...run,
+          status: 'running',
+          approvalDecision: true,
+          approvalNodeId: pending?.nodeId ?? run.approvalNodeId,
+        });
+      }
+    }
     set({ pendingApproval: null });
     get().addToast('Approval granted', 'success');
   },
   rejectRun: () => {
     approvalWait?.resolve(false);
     approvalWait = null;
+    const pending = get().pendingApproval;
+    const serverRunId = get().serverRunId;
+    if (serverRunId) {
+      const run = get().runs.find((r) => r.id === serverRunId);
+      if (run) {
+        persistRun({
+          ...run,
+          approvalDecision: false,
+          approvalNodeId: pending?.nodeId ?? run.approvalNodeId,
+        });
+      }
+    }
     set({ pendingApproval: null });
     get().addToast('Approval rejected', 'error');
   },
@@ -800,9 +962,22 @@ export const useStore = create<AppState>((set, get) => ({
     const dbRuns = await loadRunsFromDb();
     if (dbRuns.length === 0) return;
     set((s) => {
-      const existingIds = new Set(s.runs.map((r) => r.id));
-      const newFromDb = dbRuns.filter((r) => !existingIds.has(r.id));
-      return { runs: [...newFromDb, ...s.runs] };
+      const byId = new Map(s.runs.map((r) => [r.id, r]));
+      for (const run of dbRuns) {
+        const local = byId.get(run.id);
+        if (!local) {
+          byId.set(run.id, run);
+          continue;
+        }
+        const dbProgress = run.nodeExecutions?.length ?? 0;
+        const localProgress = local.nodeExecutions?.length ?? 0;
+        if (dbProgress >= localProgress || run.status !== local.status) {
+          byId.set(run.id, run);
+        }
+      }
+      return {
+        runs: Array.from(byId.values()).sort((a, b) => b.startTime.localeCompare(a.startTime)),
+      };
     });
   },
   hydrateCatalogs: async () => {

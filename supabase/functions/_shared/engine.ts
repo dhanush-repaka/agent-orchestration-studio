@@ -1,8 +1,9 @@
+// Keep in sync with src/lib/engine.ts (Deno imports only).
 import type {
   Agent, Workflow, WorkflowRun, WorkflowNode, WorkflowEdge, NodeExecution,
   LogEntry, NodeStatus, NodeRuntimeConfig, InputBinding, RunStatus,
-} from '../types';
-import { evaluateCondition, getByPath, interpolate, parseJson, type InterpContext } from './interpolate';
+} from "./types.ts";
+import { evaluateCondition, getByPath, interpolate, parseJson, type InterpContext } from "./interpolate.ts";
 
 export type InvokeFn = <T = unknown>(
   slug: string,

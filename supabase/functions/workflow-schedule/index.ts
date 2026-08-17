@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { invokeSibling } from "../_shared/invoke.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -49,6 +50,8 @@ Deno.serve(async (req: Request) => {
 
   const now = new Date();
   const queued: string[] = [];
+  const { data: agentRows } = await supabase.from("agents").select("data");
+  const agents = (agentRows ?? []).map((r) => r.data);
   for (const row of rows ?? []) {
     const data = (row.data ?? {}) as {
       triggerType?: string;
@@ -74,6 +77,19 @@ Deno.serve(async (req: Request) => {
       updated_at: now.toISOString(),
     });
     queued.push(row.id);
+    const dispatched = await invokeSibling("execute-workflow", {
+      workflowId: row.id,
+      workflow: { ...data, id: row.id },
+      agents,
+      runtimeInput: data.defaultInput ?? "{}",
+      triggeredBy: "schedule",
+    });
+    if (dispatched.ok) {
+      await supabase.from("workflow_triggers").update({
+        status: "consumed",
+        consumed_at: now.toISOString(),
+      }).eq("id", id);
+    }
   }
 
   return new Response(JSON.stringify({ ok: true, queued }), {

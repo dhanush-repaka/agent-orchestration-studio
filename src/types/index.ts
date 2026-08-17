@@ -386,6 +386,8 @@ export interface WorkflowRun {
   nodeExecutions: NodeExecution[];
   logs: LogEntry[];
   runtimeInput?: string;
+  approvalNodeId?: string;
+  approvalDecision?: boolean | null;
 }
 
 export interface Prompt {

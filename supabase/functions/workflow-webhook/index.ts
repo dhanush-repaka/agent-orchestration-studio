@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { invokeSibling } from "../_shared/invoke.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -48,6 +49,29 @@ Deno.serve(async (req: Request) => {
       status: "queued",
     });
     if (insertError) return json(500, { error: insertError.message });
+
+    const { data: agentRows } = await supabase.from("agents").select("data");
+    const agents = (agentRows ?? []).map((row) => row.data);
+    const dispatched = await invokeSibling<{ runId?: string }>("execute-workflow", {
+      workflowId: match.id,
+      workflow: match.data,
+      agents,
+      runtimeInput: JSON.stringify(payload ?? {}),
+      triggeredBy: "webhook",
+    });
+    if (dispatched.ok) {
+      await supabase.from("workflow_triggers").update({
+        status: "consumed",
+        consumed_at: new Date().toISOString(),
+      }).eq("id", id);
+      return json(202, {
+        ok: true,
+        triggerId: id,
+        workflowId: match.id,
+        status: "running",
+        runId: dispatched.data.runId,
+      });
+    }
 
     return json(202, { ok: true, triggerId: id, workflowId: match.id, status: "queued" });
   } catch (err) {

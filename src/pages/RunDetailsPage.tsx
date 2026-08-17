@@ -14,6 +14,7 @@ export function RunDetailsPage() {
   const selectedRunId = useStore((s) => s.selectedRunId);
   const setPage = useStore((s) => s.setPage);
   const addToast = useStore((s) => s.addToast);
+  const replayFrom = useStore((s) => s.replayFrom);
   const rerunFrom = useStore((s) => s.rerunFrom);
   const runningWorkflowId = useStore((s) => s.runningWorkflowId);
 
@@ -89,7 +90,14 @@ export function RunDetailsPage() {
         </div>
         <div className="divide-y divide-slate-100 dark:divide-slate-800">
           {run.nodeExecutions.map((ne) => (
-            <NodeExecRow key={ne.nodeId} ne={ne} expanded={expandedNode === ne.nodeId} onToggle={() => setExpandedNode(expandedNode === ne.nodeId ? null : ne.nodeId)} />
+            <NodeExecRow
+              key={`${ne.nodeId}-${ne.startedAt}`}
+              ne={ne}
+              expanded={expandedNode === ne.nodeId}
+              onToggle={() => setExpandedNode(expandedNode === ne.nodeId ? null : ne.nodeId)}
+              onReplay={() => replayFrom(run.id, ne.nodeId)}
+              canReplay={!runningWorkflowId}
+            />
           ))}
         </div>
       </div>
@@ -138,7 +146,15 @@ function SummaryCard({ icon: Icon, label, value, color }: { icon: typeof Clock; 
   );
 }
 
-function NodeExecRow({ ne, expanded, onToggle }: { ne: NodeExecution; expanded: boolean; onToggle: () => void }) {
+function NodeExecRow({
+  ne, expanded, onToggle, onReplay, canReplay,
+}: {
+  ne: NodeExecution;
+  expanded: boolean;
+  onToggle: () => void;
+  onReplay: () => void;
+  canReplay: boolean;
+}) {
   return (
     <div>
       <button onClick={onToggle} className="w-full flex items-center gap-3 p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition text-left">
@@ -159,6 +175,17 @@ function NodeExecRow({ ne, expanded, onToggle }: { ne: NodeExecution; expanded: 
       </button>
       {expanded && (
         <div className="px-4 pb-4 pl-12 grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="lg:col-span-2 flex justify-end">
+            <button
+              type="button"
+              onClick={onReplay}
+              disabled={!canReplay}
+              className="btn-secondary"
+              aria-label={`Replay from ${ne.nodeLabel}`}
+            >
+              <Play className="w-4 h-4" /> Replay from here
+            </button>
+          </div>
           <DetailBlock label="Input" content={ne.input} />
           <DetailBlock label="Output" content={ne.output} />
           <DetailBlock label="Prompt Sent to Model" content={ne.prompt} icon={Cpu} />

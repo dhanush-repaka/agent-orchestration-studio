@@ -39,9 +39,15 @@ function App() {
     void drainTriggers();
     const drainId = window.setInterval(() => { void drainTriggers(); }, 5000);
     const tickId = window.setInterval(() => { tickSchedules(); }, 30000);
+    const hydrateId = window.setInterval(() => {
+      const s = useStore.getState();
+      const live = s.runningWorkflowId || s.runs.some((r) => r.status === 'running' || r.status === 'waiting-approval');
+      if (live) void s.hydrateRuns();
+    }, 2500);
     return () => {
       window.clearInterval(drainId);
       window.clearInterval(tickId);
+      window.clearInterval(hydrateId);
     };
   }, [drainTriggers, tickSchedules]);
 
