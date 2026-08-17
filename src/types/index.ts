@@ -257,6 +257,11 @@ export interface NodeRuntimeConfig {
   staticWorkItemId?: number;
   linkToSource?: boolean;
   priorityMap?: Record<string, number>;
+  httpMethod?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  httpUrl?: string;
+  httpHeaders?: string;
+  httpBody?: string;
+  httpCredentialId?: string;
 }
 
 export interface WorkflowNodeData extends Record<string, unknown> {
@@ -321,6 +326,9 @@ export interface Workflow {
   published: boolean;
   createdAt: string;
   updatedAt: string;
+  webhookSecret?: string;
+  scheduleCron?: string;
+  lastScheduledAt?: string;
 }
 
 export type RunStatus =
@@ -520,7 +528,7 @@ export const DATA_PALETTE: NodePaletteItem[] = [
   { type: 'json-parser', label: 'JSON Parser', kind: 'data', icon: 'Braces' },
   { type: 'file-reader', label: 'File Reader', kind: 'data', icon: 'File' },
   { type: 'db-query', label: 'Database Query', kind: 'data', icon: 'Database' },
-  { type: 'api-request', label: 'API Request', kind: 'data', icon: 'Globe' },
+  { type: 'api-request', label: 'HTTP Request', kind: 'data', icon: 'Globe' },
 ];
 
 export const INTEGRATION_PALETTE: NodePaletteItem[] = [

@@ -21,6 +21,8 @@ function App() {
   const hydrateWorkflows = useStore((s) => s.hydrateWorkflows);
   const hydrateRuns = useStore((s) => s.hydrateRuns);
   const hydrateCatalogs = useStore((s) => s.hydrateCatalogs);
+  const drainTriggers = useStore((s) => s.drainTriggers);
+  const tickSchedules = useStore((s) => s.tickSchedules);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -32,6 +34,16 @@ function App() {
     hydrateRuns();
     hydrateCatalogs();
   }, [hydrateAgents, hydrateWorkflows, hydrateRuns, hydrateCatalogs]);
+
+  useEffect(() => {
+    void drainTriggers();
+    const drainId = window.setInterval(() => { void drainTriggers(); }, 5000);
+    const tickId = window.setInterval(() => { tickSchedules(); }, 30000);
+    return () => {
+      window.clearInterval(drainId);
+      window.clearInterval(tickId);
+    };
+  }, [drainTriggers, tickSchedules]);
 
   useEffect(() => {
     const initial = pageFromPath(window.location.pathname);

@@ -14,10 +14,11 @@ import { supabase } from '@/lib/supabase';
 import { syncPageToUrl, pageFromPath } from '@/lib/routes';
 import { sanitizeWorkflowGraph } from '@/lib/graph';
 import { uniquePrefixedId } from '@/lib/ids';
-import { logStoreError } from '@/lib/network';
+import { logStoreError, isMissingRelation, isTransientNetworkError } from '@/lib/network';
 import { resolveRerunInput } from '@/lib/rerun';
 import { interpolate } from '@/lib/interpolate';
 import { loadCatalogs, saveCatalogs, type CatalogSnapshot } from '@/lib/catalog';
+import { isScheduleDue } from '@/lib/cron';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -216,6 +217,8 @@ interface AppState {
   hydrateWorkflows: () => Promise<void>;
   hydrateRuns: () => Promise<void>;
   hydrateCatalogs: () => Promise<void>;
+  drainTriggers: () => Promise<void>;
+  tickSchedules: () => void;
 }
 
 let toastId = 0;
@@ -812,6 +815,58 @@ export const useStore = create<AppState>((set, get) => ({
       evaluations: stored.evaluations,
       knowledgeConnections: stored.knowledgeConnections,
     });
+  },
+  drainTriggers: async () => {
+    try {
+      const { data, error } = await supabase
+        .from('workflow_triggers')
+        .select('*')
+        .eq('status', 'queued')
+        .order('created_at', { ascending: true })
+        .limit(10);
+      if (error) {
+        if (isMissingRelation(error) || isTransientNetworkError(error)) return;
+        logStoreError('Failed to drain triggers', error);
+        return;
+      }
+      for (const row of data ?? []) {
+        if (get().runningWorkflowId) break;
+        const wf = get().workflows.find((w) => w.id === row.workflow_id);
+        if (!wf) continue;
+        const payload = typeof row.payload === 'string' ? row.payload : JSON.stringify(row.payload ?? {});
+        const { error: updError } = await supabase
+          .from('workflow_triggers')
+          .update({ status: 'consumed', consumed_at: new Date().toISOString() })
+          .eq('id', row.id);
+        if (updError) {
+          if (isMissingRelation(updError) || isTransientNetworkError(updError)) return;
+          logStoreError('Failed to claim trigger', updError);
+          continue;
+        }
+        get().startRun(wf.id, payload);
+        get().addToast(`Started ${wf.name} from ${row.kind}`, 'info');
+      }
+    } catch (err) {
+      if (isMissingRelation(err) || isTransientNetworkError(err)) return;
+      logStoreError('Failed to drain triggers', err);
+    }
+  },
+  tickSchedules: () => {
+    if (get().runningWorkflowId) return;
+    const now = new Date();
+    for (const wf of get().workflows) {
+      if (wf.triggerType !== 'scheduled' || !wf.scheduleCron) continue;
+      if (!wf.lastScheduledAt) {
+        get().updateWorkflow(wf.id, { lastScheduledAt: now.toISOString() });
+        continue;
+      }
+      if (!isScheduleDue(wf.scheduleCron, wf.lastScheduledAt, now)) continue;
+      if (get().runningWorkflowId) return;
+      get().updateWorkflow(wf.id, { lastScheduledAt: now.toISOString() });
+      get().startRun(wf.id, wf.defaultInput);
+      get().addToast(`Scheduled run: ${wf.name}`, 'info');
+      return;
+    }
   },
 }));
 

@@ -418,6 +418,44 @@ export async function executeWorkflow(opts: {
           await sleep(Math.min(cfg.duration ?? 1000, 15000));
           output = predOut || '{"waited":true}';
           break;
+        case 'http-request':
+        case 'api-request':
+        case 'rest-api': {
+          const ctx = buildInterpCtx(wf, workflowInput, nodeOutputs, nodes, currentId, undefined, agent);
+          const url = interpolate(cfg.httpUrl ?? '', ctx).trim();
+          if (!url) {
+            status = 'failed';
+            error = 'HTTP URL is not configured';
+            output = JSON.stringify({ error });
+            break;
+          }
+          const method = cfg.httpMethod ?? 'POST';
+          let headers: Record<string, string> = {};
+          const headerText = interpolate(cfg.httpHeaders ?? '{}', ctx);
+          const parsedHeaders = parseJson(headerText, {});
+          if (parsedHeaders && typeof parsedHeaders === 'object' && !Array.isArray(parsedHeaders)) {
+            headers = Object.fromEntries(Object.entries(parsedHeaders as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
+          }
+          const bodyText = interpolate(cfg.httpBody ?? '{{previous_agent_output}}', ctx);
+          const body = parseJson(bodyText, bodyText);
+          addLog('info', 'tool', `${method} ${url}`, currentId);
+          const { ok, data } = await callEdgeFunction<Record<string, unknown>>('http-request', {
+            method,
+            url,
+            headers,
+            body,
+            credentialId: cfg.httpCredentialId || undefined,
+          });
+          const err = typeof data.error === 'string' ? data.error : undefined;
+          if (!ok || err) {
+            status = 'failed';
+            error = err ?? 'HTTP request failed';
+          }
+          output = JSON.stringify(data, null, 2);
+          toolCalls = [{ tool: 'HTTP Request', result: error ?? `${method} ${url}` }];
+          break;
+        }
+          break;
         case 'condition':
         case 'switch':
         case 'router': {

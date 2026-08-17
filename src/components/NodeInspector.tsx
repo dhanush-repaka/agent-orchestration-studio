@@ -3,6 +3,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { useStore, newAgentSkeleton } from '@/store';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
+import { isHttpNodeType, newWebhookSecret } from '@/lib/http';
 import {
   PROMPT_VARIABLES,
   type Agent, type InputBinding, type NodeRuntimeConfig, type WorkflowNodeData,
@@ -188,6 +189,9 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
               <Field label="Approver">
                 <input className="input" placeholder="Name or email" value={cfg.approver ?? ''} onChange={(e) => setCfg({ approver: e.target.value })} />
               </Field>
+            )}
+            {isHttpNodeType(data.nodeType) && (
+              <HttpRequestFields cfg={cfg} setCfg={setCfg} />
             )}
           </>
         )}
@@ -576,8 +580,42 @@ function RuntimeTab({
   );
 }
 
+function HttpRequestFields({ cfg, setCfg }: { cfg: NodeRuntimeConfig; setCfg: (patch: Partial<NodeRuntimeConfig>) => void }) {
+  const credentials = useStore((s) => s.credentials);
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500 dark:text-slate-400">Calls any public HTTP API, including an n8n webhook. Templates like {'{{previous_agent_output}}'} are interpolated.</p>
+      <div className="grid grid-cols-3 gap-2">
+        <Field label="Method">
+          <select className="input" value={cfg.httpMethod ?? 'POST'} onChange={(e) => setCfg({ httpMethod: e.target.value as NodeRuntimeConfig['httpMethod'] })}>
+            {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </Field>
+        <div className="col-span-2">
+          <Field label="URL">
+            <input className="input font-mono text-xs" placeholder="https://n8n.example.com/webhook/..." value={cfg.httpUrl ?? ''} onChange={(e) => setCfg({ httpUrl: e.target.value })} />
+          </Field>
+        </div>
+      </div>
+      <Field label="Headers (JSON)">
+        <textarea className="input font-mono text-xs min-h-16" placeholder='{"Content-Type":"application/json"}' value={cfg.httpHeaders ?? ''} onChange={(e) => setCfg({ httpHeaders: e.target.value })} />
+      </Field>
+      <Field label="Body">
+        <textarea className="input font-mono text-xs min-h-20" placeholder="{{previous_agent_output}}" value={cfg.httpBody ?? ''} onChange={(e) => setCfg({ httpBody: e.target.value })} />
+      </Field>
+      <Field label="Credential">
+        <select className="input" value={cfg.httpCredentialId ?? ''} onChange={(e) => setCfg({ httpCredentialId: e.target.value || undefined })}>
+          <option value="">None</option>
+          {credentials.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </Field>
+    </div>
+  );
+}
+
 export function WorkflowSettingsPanel({
-  name, description, triggerType, defaultInput, failurePolicy, maxExecutionTimeSec, onChange, onClose,
+  name, description, triggerType, defaultInput, failurePolicy, maxExecutionTimeSec,
+  webhookSecret, scheduleCron, workflowId, onChange, onClose,
 }: {
   name: string;
   description: string;
@@ -585,9 +623,33 @@ export function WorkflowSettingsPanel({
   defaultInput: string;
   failurePolicy: string;
   maxExecutionTimeSec: number;
+  webhookSecret?: string;
+  scheduleCron?: string;
+  workflowId: string;
   onChange: (patch: Record<string, unknown>) => void;
   onClose?: () => void;
 }) {
+  const addToast = useStore((s) => s.addToast);
+  const base = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+  const webhookUrl = base
+    ? `${base.replace(/\/$/, '')}/functions/v1/workflow-webhook?workflowId=${encodeURIComponent(workflowId)}`
+    : '';
+
+  const setTrigger = (next: string) => {
+    const patch: Record<string, unknown> = { triggerType: next };
+    if ((next === 'webhook' || next === 'api' || next === 'azure-devops-workitem' || next === 'github-pr') && !webhookSecret) {
+      patch.webhookSecret = newWebhookSecret();
+    }
+    if (next === 'scheduled' && !scheduleCron) patch.scheduleCron = 'every 15m';
+    onChange(patch);
+  };
+
+  const copy = async (label: string, value: string) => {
+    if (!value) return;
+    await navigator.clipboard.writeText(value);
+    addToast(`Copied ${label}`, 'success');
+  };
+
   return (
     <aside className="w-[22rem] shrink-0 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col">
       <div className="p-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
@@ -601,7 +663,7 @@ export function WorkflowSettingsPanel({
         <Field label="Name"><input className="input" value={name} onChange={(e) => onChange({ name: e.target.value })} /></Field>
         <Field label="Description"><textarea className="input min-h-16" value={description} onChange={(e) => onChange({ description: e.target.value })} /></Field>
         <Field label="Trigger">
-          <select className="input" value={triggerType} onChange={(e) => onChange({ triggerType: e.target.value })}>
+          <select className="input" value={triggerType} onChange={(e) => setTrigger(e.target.value)}>
             <option value="manual">Manual</option>
             <option value="scheduled">Scheduled</option>
             <option value="api">API</option>
@@ -610,6 +672,30 @@ export function WorkflowSettingsPanel({
             <option value="github-pr">GitHub PR</option>
           </select>
         </Field>
+        {(triggerType === 'webhook' || triggerType === 'api' || triggerType === 'azure-devops-workitem' || triggerType === 'github-pr') && (
+          <div className="space-y-2">
+            <p className="text-xs text-slate-500 dark:text-slate-400">POST JSON here from n8n, GitHub, or ADO. Save the workflow first so the URL is live.</p>
+            <Field label="Webhook URL">
+              <div className="flex gap-1">
+                <input className="input font-mono text-[11px]" readOnly value={webhookUrl} />
+                <button type="button" className="btn-secondary p-2" aria-label="Copy webhook URL" onClick={() => copy('webhook URL', webhookUrl)}><Copy className="w-4 h-4" /></button>
+              </div>
+            </Field>
+            <Field label="Secret">
+              <div className="flex gap-1">
+                <input className="input font-mono text-[11px]" readOnly value={webhookSecret ?? ''} />
+                <button type="button" className="btn-secondary p-2" aria-label="Copy webhook secret" onClick={() => copy('secret', webhookSecret ?? '')}><Copy className="w-4 h-4" /></button>
+              </div>
+            </Field>
+            <p className="text-[11px] text-slate-400">Header: X-Webhook-Secret</p>
+          </div>
+        )}
+        {triggerType === 'scheduled' && (
+          <Field label="Schedule">
+            <input className="input font-mono text-xs" placeholder="every 15m or 0 6 * * *" value={scheduleCron ?? ''} onChange={(e) => onChange({ scheduleCron: e.target.value })} />
+            <p className="text-[11px] text-slate-400 mt-1">Use every 15m or a 5-field UTC cron. Fires while the studio is open, or when workflow-schedule is pinged.</p>
+          </Field>
+        )}
         <Field label="Failure policy">
           <select className="input" value={failurePolicy} onChange={(e) => onChange({ failurePolicy: e.target.value })}>
             <option value="abort">Abort on failure</option>

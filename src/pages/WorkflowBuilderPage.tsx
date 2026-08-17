@@ -655,6 +655,9 @@ function BuilderInner() {
             defaultInput={wf.defaultInput ?? '{}'}
             failurePolicy={wf.failurePolicy}
             maxExecutionTimeSec={wf.maxExecutionTimeSec}
+            webhookSecret={wf.webhookSecret}
+            scheduleCron={wf.scheduleCron}
+            workflowId={wf.id}
             onChange={(patch) => updateWorkflow(wf.id, patch as Partial<typeof wf>)}
           />
         )}
