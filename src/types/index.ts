@@ -130,6 +130,7 @@ export interface MemoryConfiguration {
   retentionPeriodDays?: number;
   maxEntries?: number;
   sensitiveDataMasking?: boolean;
+  clearedAt?: string;
 }
 
 export interface Guardrail {
@@ -558,6 +559,24 @@ export const KNOWLEDGE_CATALOG = [
   'SharePoint', 'Azure DevOps', 'Confluence', 'Google Drive', 'Local files',
   'PDFs', 'Word documents', 'Excel files', 'Vector databases', 'SQL databases', 'APIs',
 ];
+
+const KNOWLEDGE_TYPE_BY_LABEL: Record<string, KnowledgeSource['type']> = {
+  SharePoint: 'sharepoint',
+  'Azure DevOps': 'azure-devops',
+  Confluence: 'confluence',
+  'Google Drive': 'google-drive',
+  'Local files': 'local-files',
+  PDFs: 'pdf',
+  'Word documents': 'word',
+  'Excel files': 'excel',
+  'Vector databases': 'vector-db',
+  'SQL databases': 'sql-db',
+  APIs: 'api',
+};
+
+export function knowledgeCatalogType(label: string): KnowledgeSource['type'] {
+  return KNOWLEDGE_TYPE_BY_LABEL[label] ?? 'api';
+}
 
 export const TRIGGER_TYPES: TriggerType[] = [
   'manual', 'scheduled', 'api', 'webhook', 'azure-devops-workitem',

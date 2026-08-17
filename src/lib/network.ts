@@ -18,7 +18,20 @@ export function isTransientNetworkError(err: unknown): boolean {
   );
 }
 
+export function isMissingRelation(err: unknown): boolean {
+  if (typeof err === 'object' && err !== null && 'code' in err) {
+    const code = String((err as { code: unknown }).code);
+    if (code === '42P01' || code === 'PGRST205' || code === 'PGRST204') return true;
+  }
+  const msg = errorMessage(err).toLowerCase();
+  return (
+    msg.includes('does not exist') ||
+    msg.includes('schema cache') ||
+    msg.includes('could not find the table')
+  );
+}
+
 export function logStoreError(action: string, err: unknown) {
-  if (isTransientNetworkError(err)) return;
+  if (isTransientNetworkError(err) || isMissingRelation(err)) return;
   console.error(`${action}:`, errorMessage(err));
 }

@@ -20,6 +20,7 @@ function App() {
   const hydrateAgents = useStore((s) => s.hydrateAgents);
   const hydrateWorkflows = useStore((s) => s.hydrateWorkflows);
   const hydrateRuns = useStore((s) => s.hydrateRuns);
+  const hydrateCatalogs = useStore((s) => s.hydrateCatalogs);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -29,7 +30,8 @@ function App() {
     hydrateAgents();
     hydrateWorkflows();
     hydrateRuns();
-  }, [hydrateAgents, hydrateWorkflows, hydrateRuns]);
+    hydrateCatalogs();
+  }, [hydrateAgents, hydrateWorkflows, hydrateRuns, hydrateCatalogs]);
 
   useEffect(() => {
     const initial = pageFromPath(window.location.pathname);

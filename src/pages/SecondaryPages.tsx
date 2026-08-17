@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { Credential, Integration, Prompt, Evaluation, AuditLog } from '@/types';
 import { downloadText } from '@/lib/download';
+import { computeMonitoringStats, formatCost, formatDuration, formatPct, formatTokens } from '@/lib/monitoring';
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   const id = useId();
@@ -765,22 +766,21 @@ function Metric({ label, value, color }: { label: string; value: string; color: 
 // ============================================================================
 export function MonitoringPage() {
   const runs = useStore((s) => s.runs);
-  const agents = useStore((s) => s.agents);
-  const completed = runs.filter((r) => r.status === 'completed').length;
-  const failed = runs.filter((r) => r.status === 'failed').length;
-  const successRate = runs.length ? ((completed / runs.length) * 100).toFixed(0) : '0';
+  const stats = computeMonitoringStats(runs);
+  const workflowMax = Math.max(...stats.costByWorkflow.map((c) => c.cost), 0.01);
+  const agentMax = Math.max(...stats.costByAgent.map((c) => c.cost), 0.01);
 
   const metrics = [
-    { label: 'Workflow Success Rate', value: `${successRate}%`, icon: CheckCircle2, color: 'text-emerald-600' },
-    { label: 'Agent Success Rate', value: '94%', icon: Cpu, color: 'text-brand-600' },
-    { label: 'Failed Executions', value: failed.toString(), icon: XCircle, color: 'text-red-600' },
-    { label: 'Avg Response Time', value: '3.8s', icon: Clock, color: 'text-amber-600' },
-    { label: 'P95 Response Time', value: '8.2s', icon: TrendingUp, color: 'text-violet-600' },
-    { label: 'Total Token Usage', value: `${(runs.reduce((a, r) => a + r.totalTokens, 0) / 1000).toFixed(1)}K`, icon: Zap, color: 'text-indigo-600' },
-    { label: 'Total Cost', value: `$${runs.reduce((a, r) => a + r.estimatedCost, 0).toFixed(2)}`, icon: Coins, color: 'text-teal-600' },
-    { label: 'Tool Failure Rate', value: '2.1%', icon: AlertCircle, color: 'text-red-600' },
-    { label: 'Retry Rate', value: '5.3%', icon: RotateCw, color: 'text-amber-600' },
-    { label: 'Approval Wait Time', value: '2.4m', icon: Clock, color: 'text-slate-600' },
+    { label: 'Workflow Success Rate', value: formatPct(stats.workflowSuccessRate), icon: CheckCircle2, color: 'text-emerald-600' },
+    { label: 'Agent Success Rate', value: formatPct(stats.agentSuccessRate), icon: Cpu, color: 'text-brand-600' },
+    { label: 'Failed Executions', value: stats.failed.toString(), icon: XCircle, color: 'text-red-600' },
+    { label: 'Avg Response Time', value: formatDuration(stats.avgDurationMs), icon: Clock, color: 'text-amber-600' },
+    { label: 'P95 Response Time', value: formatDuration(stats.p95DurationMs), icon: TrendingUp, color: 'text-violet-600' },
+    { label: 'Total Token Usage', value: formatTokens(stats.totalTokens), icon: Zap, color: 'text-indigo-600' },
+    { label: 'Total Cost', value: formatCost(stats.totalCost), icon: Coins, color: 'text-teal-600' },
+    { label: 'Tool Failure Rate', value: formatPct(stats.toolFailureRate), icon: AlertCircle, color: 'text-red-600' },
+    { label: 'Retry Rate', value: formatPct(stats.retryRate), icon: RotateCw, color: 'text-amber-600' },
+    { label: 'Approval Wait Time', value: formatDuration(stats.avgApprovalWaitMs), icon: Clock, color: 'text-slate-600' },
   ];
 
   return (
@@ -802,13 +802,16 @@ export function MonitoringPage() {
         <div className="card p-5">
           <h3 className="section-title mb-4">Cost by Workflow</h3>
           <div className="space-y-2">
-            {runs.slice(0, 4).map((r) => (
-              <div key={r.id} className="flex items-center gap-3">
-                <span className="text-xs text-slate-600 dark:text-slate-300 w-40 truncate">{r.workflowName}</span>
+            {stats.costByWorkflow.length === 0 && (
+              <p className="text-xs text-slate-400">No run cost data yet</p>
+            )}
+            {stats.costByWorkflow.map((row) => (
+              <div key={row.name} className="flex items-center gap-3">
+                <span className="text-xs text-slate-600 dark:text-slate-300 w-40 truncate">{row.name}</span>
                 <div className="flex-1 h-4 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-teal-500 rounded-full" style={{ width: `${(r.estimatedCost / 0.5) * 100}%` }} />
+                  <div className="h-full bg-teal-500 rounded-full" style={{ width: `${(row.cost / workflowMax) * 100}%` }} />
                 </div>
-                <span className="text-xs font-medium text-slate-700 dark:text-slate-300 w-12">${r.estimatedCost.toFixed(2)}</span>
+                <span className="text-xs font-medium text-slate-700 dark:text-slate-300 w-12">{formatCost(row.cost)}</span>
               </div>
             ))}
           </div>
@@ -816,13 +819,16 @@ export function MonitoringPage() {
         <div className="card p-5">
           <h3 className="section-title mb-4">Cost by Agent</h3>
           <div className="space-y-2">
-            {agents.slice(0, 5).map((a, i) => (
-              <div key={a.id} className="flex items-center gap-3">
-                <span className="text-xs text-slate-600 dark:text-slate-300 w-40 truncate">{a.displayName}</span>
+            {stats.costByAgent.length === 0 && (
+              <p className="text-xs text-slate-400">No agent cost data yet</p>
+            )}
+            {stats.costByAgent.map((row) => (
+              <div key={row.name} className="flex items-center gap-3">
+                <span className="text-xs text-slate-600 dark:text-slate-300 w-40 truncate">{row.name}</span>
                 <div className="flex-1 h-4 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-brand-500 rounded-full" style={{ width: `${[80, 60, 45, 30, 20][i]}%` }} />
+                  <div className="h-full bg-brand-500 rounded-full" style={{ width: `${(row.cost / agentMax) * 100}%` }} />
                 </div>
-                <span className="text-xs font-medium text-slate-700 dark:text-slate-300 w-12">${[0.15, 0.11, 0.08, 0.05, 0.03][i]}</span>
+                <span className="text-xs font-medium text-slate-700 dark:text-slate-300 w-12">{formatCost(row.cost)}</span>
               </div>
             ))}
           </div>

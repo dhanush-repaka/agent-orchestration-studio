@@ -17,6 +17,7 @@ import { uniquePrefixedId } from '@/lib/ids';
 import { logStoreError } from '@/lib/network';
 import { resolveRerunInput } from '@/lib/rerun';
 import { interpolate } from '@/lib/interpolate';
+import { loadCatalogs, saveCatalogs, type CatalogSnapshot } from '@/lib/catalog';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -184,6 +185,7 @@ interface AppState {
   addEvaluation: () => Evaluation;
   runEvaluation: (id: string) => void;
   approveEvaluation: (id: string) => void;
+  addEvaluationCase: (agentId: string, agentName: string, input: string, expectedOutput: string) => void;
 
   // user CRUD
   updateUser: (id: string, patch: Partial<typeof USERS[number]>) => void;
@@ -213,11 +215,28 @@ interface AppState {
   hydrateAgents: () => Promise<void>;
   hydrateWorkflows: () => Promise<void>;
   hydrateRuns: () => Promise<void>;
+  hydrateCatalogs: () => Promise<void>;
 }
 
 let toastId = 0;
 let runGeneration = 0;
 let approvalWait: { resolve: (ok: boolean) => void } | null = null;
+
+function catalogSnapshot(s: {
+  prompts: CatalogSnapshot['prompts'];
+  credentials: CatalogSnapshot['credentials'];
+  integrations: CatalogSnapshot['integrations'];
+  evaluations: CatalogSnapshot['evaluations'];
+  knowledgeConnections: CatalogSnapshot['knowledgeConnections'];
+}): CatalogSnapshot {
+  return {
+    prompts: s.prompts,
+    credentials: s.credentials,
+    integrations: s.integrations,
+    evaluations: s.evaluations,
+    knowledgeConnections: s.knowledgeConnections,
+  };
+}
 
 const WS_SETTINGS_KEY = 'aos-workspace-settings';
 const INITIAL_WORKSPACE = loadWorkspaceSettingsEarly();
@@ -352,9 +371,12 @@ export const useStore = create<AppState>((set, get) => ({
     get().addToast(`Cloned agent: ${agent.displayName}`, 'success');
   },
 
-  updateCredential: (id, patch) => set((s) => ({
-    credentials: s.credentials.map((c) => (c.id === id ? { ...c, ...patch } : c)),
-  })),
+  updateCredential: (id, patch) => {
+    set((s) => ({
+      credentials: s.credentials.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    }));
+    void saveCatalogs(catalogSnapshot(get()));
+  },
   addCredential: () => {
     const id = uniquePrefixedId('c', get().credentials.map((c) => c.id));
     const cred: Credential = {
@@ -366,6 +388,7 @@ export const useStore = create<AppState>((set, get) => ({
       environment: get().environment,
     };
     set((s) => ({ credentials: [cred, ...s.credentials] }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast('Credential created', 'success');
     return cred;
   },
@@ -383,6 +406,7 @@ export const useStore = create<AppState>((set, get) => ({
       return;
     }
     set((s) => ({ credentials: s.credentials.filter((c) => c.id !== id) }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast(`Deleted ${cred.name}`, 'success');
   },
   addIntegration: () => {
@@ -396,6 +420,7 @@ export const useStore = create<AppState>((set, get) => ({
       workflowsUsing: 0,
     };
     set((s) => ({ integrations: [int, ...s.integrations] }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast('Connection created', 'success');
     return int;
   },
@@ -407,6 +432,7 @@ export const useStore = create<AppState>((set, get) => ({
         ? { ...i, status: 'connected', lastTestedAt: new Date().toISOString() }
         : i),
     }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast(`${int.name} connection test passed`, 'success');
   },
   rotateIntegration: (id) => {
@@ -417,6 +443,7 @@ export const useStore = create<AppState>((set, get) => ({
         ? { ...i, lastTestedAt: new Date().toISOString() }
         : i),
     }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast(`Rotated connection credential for ${int.name}`, 'success');
   },
   deleteIntegration: (id) => {
@@ -427,6 +454,7 @@ export const useStore = create<AppState>((set, get) => ({
       return;
     }
     set((s) => ({ integrations: s.integrations.filter((i) => i.id !== id) }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast(`Deleted ${int.name}`, 'success');
   },
   addPrompt: () => {
@@ -446,6 +474,7 @@ export const useStore = create<AppState>((set, get) => ({
       updatedAt: new Date().toISOString(),
     };
     set((s) => ({ prompts: [prompt, ...s.prompts] }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast('Prompt created', 'success');
     return prompt;
   },
@@ -461,6 +490,7 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({
       prompts: s.prompts.map((p) => p.id === id ? { ...p, usageCount: p.usageCount + 1 } : p),
     }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast(`Tested ${prompt.name}`, 'success');
     return sample;
   },
@@ -474,6 +504,7 @@ export const useStore = create<AppState>((set, get) => ({
       collections: 0,
     };
     set((s) => ({ knowledgeConnections: [source, ...s.knowledgeConnections] }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast('Knowledge source added', 'success');
     return source;
   },
@@ -486,6 +517,7 @@ export const useStore = create<AppState>((set, get) => ({
         ? { ...k, status: next, collections: next === 'connected' ? Math.max(1, k.collections) : k.collections }
         : k),
     }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast(`${src.name} ${next}`, 'success');
   },
   addEvaluation: () => {
@@ -503,6 +535,7 @@ export const useStore = create<AppState>((set, get) => ({
       ],
     };
     set((s) => ({ evaluations: [ev, ...s.evaluations] }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast('Evaluation created', 'success');
     return ev;
   },
@@ -512,6 +545,7 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({
       evaluations: s.evaluations.map((e) => e.id === id ? { ...e, status: 'running' } : e),
     }));
+    void saveCatalogs(catalogSnapshot(get()));
     window.setTimeout(() => {
       set((s) => ({
         evaluations: s.evaluations.map((e) => {
@@ -533,6 +567,7 @@ export const useStore = create<AppState>((set, get) => ({
           return { ...e, status: 'completed' as const, cases, averageAccuracy };
         }),
       }));
+      void saveCatalogs(catalogSnapshot(get()));
       get().addToast(`Finished ${ev.name}`, 'success');
     }, 700);
   },
@@ -546,7 +581,40 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({
       evaluations: s.evaluations.map((e) => e.id === id ? { ...e, approvedForProduction: true } : e),
     }));
+    void saveCatalogs(catalogSnapshot(get()));
     get().addToast(`${ev.name} approved for production`, 'success');
+  },
+  addEvaluationCase: (agentId, agentName, input, expectedOutput) => {
+    const existing = get().evaluations.find((e) => e.agentId === agentId);
+    const caseRow = {
+      id: existing
+        ? uniquePrefixedId(`${existing.id}-c`, existing.cases.map((c) => c.id))
+        : 'c1',
+      input,
+      expectedOutput,
+    };
+    if (existing) {
+      set((s) => ({
+        evaluations: s.evaluations.map((e) => e.id === existing.id
+          ? { ...e, cases: [...e.cases, caseRow], status: 'draft' as const, approvedForProduction: false }
+          : e),
+      }));
+    } else {
+      const id = uniquePrefixedId('e', get().evaluations.map((e) => e.id));
+      set((s) => ({
+        evaluations: [{
+          id,
+          name: `${agentName} eval`,
+          agentId,
+          agentName,
+          status: 'draft',
+          createdAt: new Date().toISOString(),
+          cases: [{ ...caseRow, id: `${id}-c1` }],
+        }, ...s.evaluations],
+      }));
+    }
+    void saveCatalogs(catalogSnapshot(get()));
+    get().addToast('Saved as evaluation case', 'success');
   },
 
   updateUser: (id, patch) => set((s) => ({
@@ -732,6 +800,17 @@ export const useStore = create<AppState>((set, get) => ({
       const existingIds = new Set(s.runs.map((r) => r.id));
       const newFromDb = dbRuns.filter((r) => !existingIds.has(r.id));
       return { runs: [...newFromDb, ...s.runs] };
+    });
+  },
+  hydrateCatalogs: async () => {
+    const stored = await loadCatalogs();
+    if (!stored) return;
+    set({
+      prompts: stored.prompts,
+      credentials: stored.credentials,
+      integrations: stored.integrations,
+      evaluations: stored.evaluations,
+      knowledgeConnections: stored.knowledgeConnections,
     });
   },
 }));

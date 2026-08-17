@@ -1,10 +1,11 @@
-import { useState, useId, cloneElement, isValidElement, type ReactElement } from 'react';
+import { useState, useId, useRef, cloneElement, isValidElement, type ReactElement } from 'react';
 import { useStore } from '@/store';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import {
   AGENT_TYPES, MODEL_PROVIDERS, TOOL_CATALOG, KNOWLEDGE_CATALOG,
-  PROMPT_VARIABLES, type Agent, type AgentInput, type DataType, type OutputFormat, type MemoryType,
+  PROMPT_VARIABLES, knowledgeCatalogType,
+  type Agent, type AgentInput, type DataType, type OutputFormat, type MemoryType, type KnowledgeSource,
 } from '@/types';
 import {
   ArrowLeft, Save, Info, Cpu, MessageSquareText, ArrowDownToLine,
@@ -37,6 +38,8 @@ export function AgentConfigPage() {
   const updateAgent = useStore((s) => s.updateAgent);
   const setPage = useStore((s) => s.setPage);
   const addToast = useStore((s) => s.addToast);
+  const currentUser = useStore((s) => s.currentUser);
+  const addEvaluationCase = useStore((s) => s.addEvaluationCase);
 
   const agent = agents.find((a) => a.id === selectedAgentId);
   const [section, setSection] = useState<Section>('basic');
@@ -45,6 +48,11 @@ export function AgentConfigPage() {
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testRunning, setTestRunning] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
+  const [showCompare, setShowCompare] = useState(false);
+  const systemPromptRef = useRef<HTMLTextAreaElement>(null);
+  const userPromptRef = useRef<HTMLTextAreaElement>(null);
+  const contextPromptRef = useRef<HTMLTextAreaElement>(null);
+  const focusedPrompt = useRef<'system' | 'user' | 'context'>('user');
 
   if (!agent || !draft) {
     return (
@@ -56,6 +64,52 @@ export function AgentConfigPage() {
   }
 
   const patch = (p: Partial<Agent>) => setDraft({ ...draft, ...p });
+
+  const insertVariable = (token: string) => {
+    const field = focusedPrompt.current;
+    const ref = field === 'system' ? systemPromptRef : field === 'user' ? userPromptRef : contextPromptRef;
+    const key = field === 'system' ? 'systemPrompt' : field === 'user' ? 'userPromptTemplate' : 'contextPrompt';
+    const current = draft.prompt[key] ?? '';
+    const el = ref.current;
+    const start = el?.selectionStart ?? current.length;
+    const end = el?.selectionEnd ?? current.length;
+    const next = current.slice(0, start) + token + current.slice(end);
+    patch({ prompt: { ...draft.prompt, [key]: next } });
+    requestAnimationFrame(() => {
+      const box = ref.current;
+      if (!box) return;
+      box.focus();
+      const pos = start + token.length;
+      box.setSelectionRange(pos, pos);
+    });
+  };
+
+  const savePromptVersion = () => {
+    const snapshot = { ...draft.prompt, createdAt: new Date().toISOString(), createdBy: currentUser.name };
+    patch({
+      promptHistory: [snapshot, ...draft.promptHistory],
+      prompt: { ...draft.prompt, version: draft.prompt.version + 1, createdAt: snapshot.createdAt, createdBy: currentUser.name },
+    });
+    addToast(`Saved prompt v${draft.prompt.version}`, 'success');
+  };
+
+  const restorePreviousPrompt = () => {
+    const prev = draft.promptHistory[0];
+    if (!prev) {
+      addToast('No previous prompt version to restore', 'error');
+      return;
+    }
+    patch({ prompt: { ...prev } });
+    addToast(`Restored prompt v${prev.version}`, 'success');
+  };
+
+  const patchKnowledgeDefaults = (p: Partial<KnowledgeSource>) => {
+    if (draft.knowledge.length === 0) {
+      patch({ knowledge: [{ id: `ks-${Date.now()}`, type: 'vector-db', topK: 5, similarityThreshold: 0.8, chunkSize: 1000, citationRequired: false, ...p }] });
+      return;
+    }
+    patch({ knowledge: draft.knowledge.map((ks) => ({ ...ks, ...p })) });
+  };
 
   const handleSave = () => {
     updateAgent(agent.id, draft);
@@ -248,16 +302,16 @@ export function AgentConfigPage() {
 
             {section === 'prompt' && (
               <SectionCard title="Prompt Configuration" icon={MessageSquareText}>
-                <Field label="System Prompt"><textarea className="input min-h-28 font-mono text-xs" value={draft.prompt.systemPrompt} onChange={(e) => patch({ prompt: { ...draft.prompt, systemPrompt: e.target.value } })} /></Field>
-                <Field label="User Prompt Template"><textarea className="input min-h-28 font-mono text-xs" value={draft.prompt.userPromptTemplate} onChange={(e) => patch({ prompt: { ...draft.prompt, userPromptTemplate: e.target.value } })} /></Field>
-                <Field label="Context Prompt"><textarea className="input min-h-20 font-mono text-xs" value={draft.prompt.contextPrompt ?? ''} onChange={(e) => patch({ prompt: { ...draft.prompt, contextPrompt: e.target.value } })} /></Field>
+                <Field label="System Prompt"><textarea ref={systemPromptRef} onFocus={() => { focusedPrompt.current = 'system'; }} className="input min-h-28 font-mono text-xs" value={draft.prompt.systemPrompt} onChange={(e) => patch({ prompt: { ...draft.prompt, systemPrompt: e.target.value } })} /></Field>
+                <Field label="User Prompt Template"><textarea ref={userPromptRef} onFocus={() => { focusedPrompt.current = 'user'; }} className="input min-h-28 font-mono text-xs" value={draft.prompt.userPromptTemplate} onChange={(e) => patch({ prompt: { ...draft.prompt, userPromptTemplate: e.target.value } })} /></Field>
+                <Field label="Context Prompt"><textarea ref={contextPromptRef} onFocus={() => { focusedPrompt.current = 'context'; }} className="input min-h-20 font-mono text-xs" value={draft.prompt.contextPrompt ?? ''} onChange={(e) => patch({ prompt: { ...draft.prompt, contextPrompt: e.target.value } })} /></Field>
                 <Field label="Output Instructions"><textarea className="input min-h-20 font-mono text-xs" value={draft.prompt.outputInstructions ?? ''} onChange={(e) => patch({ prompt: { ...draft.prompt, outputInstructions: e.target.value } })} /></Field>
                 <Field label="Error Handling Instructions"><textarea className="input min-h-20 font-mono text-xs" value={draft.prompt.errorHandlingInstructions ?? ''} onChange={(e) => patch({ prompt: { ...draft.prompt, errorHandlingInstructions: e.target.value } })} /></Field>
                 <div>
                   <p className="label">Available Variables</p>
                   <div className="flex flex-wrap gap-1.5">
                     {PROMPT_VARIABLES.map((v) => (
-                      <button key={v} onClick={() => addToast(`Insert ${v} at cursor (demo)`, 'info')} className="badge bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-900 cursor-pointer font-mono">{v}</button>
+                      <button key={v} onClick={() => insertVariable(v)} className="badge bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-900 cursor-pointer font-mono">{v}</button>
                     ))}
                   </div>
                 </div>
@@ -266,10 +320,28 @@ export function AgentConfigPage() {
                   <pre className="text-xs font-mono text-slate-600 dark:text-slate-400 whitespace-pre-wrap">{draft.prompt.systemPrompt}\n\n{draft.prompt.userPromptTemplate}</pre>
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={() => addToast('Prompt version saved', 'success')} className="btn-secondary text-sm">Save Version</button>
-                  <button onClick={() => addToast('Comparing versions (demo)', 'info')} className="btn-secondary text-sm">Compare Versions</button>
-                  <button onClick={() => addToast('Restored previous version (demo)', 'info')} className="btn-secondary text-sm">Restore Previous</button>
+                  <button onClick={savePromptVersion} className="btn-secondary text-sm">Save Version</button>
+                  <button onClick={() => {
+                    if (!draft.promptHistory[0]) {
+                      addToast('Save a version before comparing', 'error');
+                      return;
+                    }
+                    setShowCompare((v) => !v);
+                  }} className="btn-secondary text-sm">{showCompare ? 'Hide Comparison' : 'Compare Versions'}</button>
+                  <button onClick={restorePreviousPrompt} className="btn-secondary text-sm">Restore Previous</button>
                 </div>
+                {showCompare && draft.promptHistory[0] && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="card p-3 bg-slate-50 dark:bg-slate-800/50">
+                      <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Previous v{draft.promptHistory[0].version}</p>
+                      <pre className="text-xs font-mono text-slate-600 dark:text-slate-400 whitespace-pre-wrap">{draft.promptHistory[0].systemPrompt}{'\n\n'}{draft.promptHistory[0].userPromptTemplate}</pre>
+                    </div>
+                    <div className="card p-3 bg-slate-50 dark:bg-slate-800/50">
+                      <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Current v{draft.prompt.version}</p>
+                      <pre className="text-xs font-mono text-slate-600 dark:text-slate-400 whitespace-pre-wrap">{draft.prompt.systemPrompt}{'\n\n'}{draft.prompt.userPromptTemplate}</pre>
+                    </div>
+                  </div>
+                )}
               </SectionCard>
             )}
 
@@ -360,11 +432,29 @@ export function AgentConfigPage() {
                 <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">Connect knowledge sources for retrieval-augmented generation.</p>
                 <div className="grid grid-cols-2 gap-2 mb-4">
                   {KNOWLEDGE_CATALOG.map((k) => {
-                    const selected = draft.knowledge.some((ks) => ks.type === k.toLowerCase().replace(/\s+/g, '-'));
+                    const selected = draft.knowledge.some((ks) => ks.type === knowledgeCatalogType(k));
                     return (
                       <button
                         key={k}
-                        onClick={() => addToast(`${selected ? 'Remove' : 'Add'} ${k} (demo)`, 'info')}
+                        onClick={() => {
+                          const type = knowledgeCatalogType(k);
+                          const selectedNow = draft.knowledge.some((ks) => ks.type === type);
+                          if (selectedNow) {
+                            patch({ knowledge: draft.knowledge.filter((ks) => ks.type !== type) });
+                          } else {
+                            const defaults = draft.knowledge[0];
+                            patch({
+                              knowledge: [...draft.knowledge, {
+                                id: `ks-${type}-${Date.now()}`,
+                                type,
+                                topK: defaults?.topK ?? 5,
+                                similarityThreshold: defaults?.similarityThreshold ?? 0.8,
+                                chunkSize: defaults?.chunkSize ?? 1000,
+                                citationRequired: defaults?.citationRequired ?? false,
+                              }],
+                            });
+                          }
+                        }}
                         className={`card p-3 text-left text-sm transition ${selected ? 'border-brand-400 bg-brand-50 dark:bg-brand-950' : 'bg-slate-50 dark:bg-slate-800/50'}`}
                       >
                         <div className="flex items-center gap-2">
@@ -377,11 +467,11 @@ export function AgentConfigPage() {
                   })}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <Field label="Retrieval Top K"><input type="number" className="input" value={draft.knowledge[0]?.topK ?? 5} onChange={() => {}} /></Field>
-                  <Field label="Similarity Threshold"><input type="number" step="0.05" className="input" value={draft.knowledge[0]?.similarityThreshold ?? 0.8} onChange={() => {}} /></Field>
-                  <Field label="Chunk Size"><input type="number" className="input" value={draft.knowledge[0]?.chunkSize ?? 1000} onChange={() => {}} /></Field>
+                  <Field label="Retrieval Top K"><input type="number" className="input" value={draft.knowledge[0]?.topK ?? 5} onChange={(e) => patchKnowledgeDefaults({ topK: parseInt(e.target.value) || 0 })} /></Field>
+                  <Field label="Similarity Threshold"><input type="number" step="0.05" className="input" value={draft.knowledge[0]?.similarityThreshold ?? 0.8} onChange={(e) => patchKnowledgeDefaults({ similarityThreshold: parseFloat(e.target.value) || 0 })} /></Field>
+                  <Field label="Chunk Size"><input type="number" className="input" value={draft.knowledge[0]?.chunkSize ?? 1000} onChange={(e) => patchKnowledgeDefaults({ chunkSize: parseInt(e.target.value) || 0 })} /></Field>
                   <Field label="Citation Required">
-                    <select className="input" value={draft.knowledge[0]?.citationRequired ? 'yes' : 'no'} onChange={() => {}}>
+                    <select className="input" value={draft.knowledge[0]?.citationRequired ? 'yes' : 'no'} onChange={(e) => patchKnowledgeDefaults({ citationRequired: e.target.value === 'yes' })}>
                       <option value="yes">Yes</option>
                       <option value="no">No</option>
                     </select>
@@ -410,7 +500,10 @@ export function AgentConfigPage() {
                         </select>
                       </Field>
                     </div>
-                    <button onClick={() => addToast('Memory cleared (demo)', 'info')} className="btn-secondary">Clear Memory</button>
+                    <button onClick={() => {
+                      patch({ memory: { ...draft.memory, key: '', maxEntries: 0, clearedAt: new Date().toISOString() } });
+                      addToast('Memory cleared', 'success');
+                    }} className="btn-secondary">Clear Memory</button>
                   </>
                 )}
               </SectionCard>
@@ -491,7 +584,7 @@ export function AgentConfigPage() {
                         )}
                       </div>
                     </div>
-                    <button onClick={() => addToast('Saved as evaluation case (demo)', 'success')} className="btn-secondary text-sm">Save as Evaluation Case</button>
+                    <button onClick={() => addEvaluationCase(draft.id, draft.displayName, testInput, testResult)} className="btn-secondary text-sm">Save as Evaluation Case</button>
                   </div>
                 )}
               </SectionCard>
