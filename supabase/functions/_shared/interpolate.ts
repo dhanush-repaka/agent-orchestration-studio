@@ -61,6 +61,9 @@ export function interpolate(template: string, ctx: InterpContext): string {
     const key = raw.trim();
     if (key === 'user_input' || key === 'workflow_input') return stringify(ctx.workflowInput);
     if (key === 'previous_agent_output') return stringify(ctx.previousOutput);
+    if (key.startsWith('previous_agent_output.')) {
+      return stringify(getByPath(ctx.previousOutput, key.slice('previous_agent_output.'.length)));
+    }
     if (key === 'knowledge_context') return ctx.knowledge ?? '';
     if (key === 'current_date') return new Date().toISOString();
     if (key === 'environment') return ctx.environment ?? '';

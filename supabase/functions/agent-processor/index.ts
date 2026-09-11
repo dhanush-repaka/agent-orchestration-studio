@@ -77,6 +77,8 @@ interface AgentProcessorRequest {
 }
 
 const SYSTEM_PROMPTS: Record<string, string> = {
+  "Requirement Analysis":
+    "You are a senior business analyst. Analyze the work item and return ONLY valid JSON with workItemId, title, businessObjective, acceptanceCriteria, qualityScore (0-100), and gaps (string array).",
   "Test Data Generator":
     "You are a senior test data engineer. Given the upstream test cases, generate realistic test datasets for each scenario. Return ONLY valid JSON with a 'datasets' array. Each dataset has: scenarioId, data (object with field names and realistic values). Include positive, negative, and boundary data. Do not include markdown fences or commentary.",
   "Playwright Automation":

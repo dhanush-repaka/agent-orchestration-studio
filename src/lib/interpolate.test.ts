@@ -20,6 +20,7 @@ describe('interpolate', () => {
 
   it('resolves previous output and node labels', () => {
     expect(interpolate('{{previous_agent_output}}', ctx)).toContain('82');
+    expect(interpolate('{{previous_agent_output.qualityScore}}', ctx)).toBe('82');
     expect(interpolate('{{nodes.n3.qualityScore}}', ctx)).toBe('82');
     expect(interpolate('{{nodes.Requirement Analysis.qualityScore}}', ctx)).toBe('82');
   });

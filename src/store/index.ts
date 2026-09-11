@@ -6,7 +6,7 @@ import type {
   Evaluation, KnowledgeConnection, AuditLog,
 } from '@/types';
 import {
-  AGENTS, WORKFLOWS, WORKFLOW_RUNS, PROMPTS, CREDENTIALS,
+  AGENTS, WORKFLOWS, SAMPLE_WORKFLOW, WORKFLOW_RUNS, PROMPTS, CREDENTIALS,
   INTEGRATIONS, EVALUATIONS, AUDIT_LOGS, USERS, CURRENT_USER,
   KNOWLEDGE_CONNECTIONS,
 } from '@/data/mock';
@@ -21,6 +21,7 @@ import { interpolate } from '@/lib/interpolate';
 import { loadCatalogs, saveCatalogs, type CatalogSnapshot } from '@/lib/catalog';
 import { isScheduleDue } from '@/lib/cron';
 import { callEdgeFunction } from '@/lib/api';
+import { mergeUserStoryWorkflow, needsUserStoryUpgrade, USER_STORY_WORKFLOW_ID } from '@/lib/workflowSetup';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -950,13 +951,19 @@ export const useStore = create<AppState>((set, get) => ({
   hydrateWorkflows: async () => {
     const dbWorkflows = await loadWorkflowsFromDb();
     if (dbWorkflows.length === 0) return;
+    const persistUpgrades: Workflow[] = [];
     set((s) => {
       const byId = new Map(s.workflows.map((w) => [w.id, w]));
       for (const w of dbWorkflows) {
-        byId.set(w.id, { ...w, edges: sanitizeWorkflowGraph(w.nodes ?? [], w.edges ?? []) });
+        const next = w.id === USER_STORY_WORKFLOW_ID
+          ? mergeUserStoryWorkflow(w, SAMPLE_WORKFLOW)
+          : w;
+        if (w.id === USER_STORY_WORKFLOW_ID && needsUserStoryUpgrade(w)) persistUpgrades.push(next);
+        byId.set(w.id, { ...next, edges: sanitizeWorkflowGraph(next.nodes ?? [], next.edges ?? []) });
       }
       return { workflows: Array.from(byId.values()) };
     });
+    persistUpgrades.forEach((wf) => persistWorkflow(wf));
   },
   hydrateRuns: async () => {
     const dbRuns = await loadRunsFromDb();

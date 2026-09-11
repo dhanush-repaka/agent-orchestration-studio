@@ -262,6 +262,7 @@ export interface NodeRuntimeConfig {
   httpHeaders?: string;
   httpBody?: string;
   httpCredentialId?: string;
+  playwrightAction?: 'locators' | 'execute';
 }
 
 export interface WorkflowNodeData extends Record<string, unknown> {

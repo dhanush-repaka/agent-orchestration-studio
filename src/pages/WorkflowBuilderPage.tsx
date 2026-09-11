@@ -43,6 +43,7 @@ const AGENT_ICONS: Record<string, string> = {
   'Defect Analysis': 'Bug',
   'Report Generator': 'FileText',
   'Data Retrieval': 'Boxes',
+  'ADO Upload': 'Upload',
   'Root Cause Analysis': 'Activity',
   'Planner': 'ListChecks',
   'Research': 'Search',
