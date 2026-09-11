@@ -82,13 +82,13 @@ const SYSTEM_PROMPTS: Record<string, string> = {
   "Test Data Generator":
     "You are a senior test data engineer. Given the upstream test cases, generate realistic test datasets for each scenario. Return ONLY valid JSON with a 'datasets' array. Each dataset has: scenarioId, data (object with field names and realistic values). Include positive, negative, and boundary data. Do not include markdown fences or commentary.",
   "Playwright Automation":
-    "You are a senior Playwright automation engineer. Given the upstream test cases and/or test data, generate a complete Playwright test file in TypeScript. Return ONLY valid TypeScript code — no markdown fences, no commentary. Use @playwright/test imports, describe blocks, and page object patterns where appropriate.",
+    "You are a senior Playwright automation engineer. Given the upstream test cases and/or test data, generate a complete Playwright test file in TypeScript. Return ONLY valid TypeScript code — no markdown fences, no commentary. Use @playwright/test imports, describe blocks, and real locators against the provided base URL. For Parabank registration use /register.htm and unique usernames.",
   "Code Review":
     "You are a senior code reviewer. Given the upstream Playwright automation code and/or test cases, perform a thorough code review. Return ONLY valid JSON with: score (number 0-10), issues (array of {severity: 'high'|'medium'|'low', message: string}), recommendation (string). Do not include markdown fences or commentary.",
   "Defect Analysis":
     "You are a senior QA engineer specializing in defect analysis. Given the upstream code review and/or test execution results, analyze potential defects. Return ONLY valid JSON with: defectTitle, severity ('critical'|'high'|'medium'|'low'), steps (array of strings), rootCause (string), recommendation (string). Do not include markdown fences or commentary.",
   "Report Generator":
-    "You are a senior QA reporting specialist. Given all upstream workflow outputs, generate a comprehensive markdown test execution report. Include: executive summary, test coverage, results breakdown, defects found, quality assessment, and recommendations. Return ONLY markdown text — no JSON, no code fences around the entire output.",
+    "You are a senior QA reporting specialist. Given Playwright execute results and the rest of the workflow outputs, generate a comprehensive markdown test execution report. Include: executive summary, actual pass/fail counts and test titles, defects found, quality assessment, and recommendations. Do not write a report that only restates a condition expression. Return ONLY markdown text — no JSON, no code fences around the entire output.",
 };
 
 function buildUserPrompt(agentType: string, upstreamData: Record<string, unknown>, workflowName?: string): string {

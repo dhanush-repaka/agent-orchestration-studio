@@ -1,6 +1,78 @@
 import type { Agent, InputBinding, Workflow, WorkflowNode } from '@/types';
+import { DEFAULT_PLAYWRIGHT_BASE_URL } from '@/lib/playwrightSpec';
 
 export const USER_STORY_WORKFLOW_ID = 'w1';
+export const DEFAULT_ADO_ORG = 'aiqenexus';
+export const DEFAULT_ADO_PROJECT = 'AI_Agents';
+export { DEFAULT_PLAYWRIGHT_BASE_URL };
+
+export function applyDefaultAdoSettings(wf: Workflow): Workflow {
+  let changed = false;
+  const nodes = wf.nodes.map((node) => {
+    const type = node.data.nodeType;
+    const agentType = node.data.agentType;
+    const isRetrieval = type === 'Data Retrieval' || agentType === 'Data Retrieval';
+    const isUpload = type === 'ADO Upload' || agentType === 'ADO Upload'
+      || type === 'azure-devops' || type === 'azure-devops-mcp';
+    if (!isRetrieval && !isUpload) return node;
+    const cfg = { ...(node.data.config as Record<string, unknown> | undefined) };
+    let nodeChanged = false;
+    if (!cfg.adoOrg) {
+      cfg.adoOrg = DEFAULT_ADO_ORG;
+      nodeChanged = true;
+    }
+    if (isUpload && !cfg.adoProject) {
+      cfg.adoProject = DEFAULT_ADO_PROJECT;
+      nodeChanged = true;
+    }
+    if (!nodeChanged) return node;
+    changed = true;
+    return { ...node, data: { ...node.data, config: cfg } };
+  });
+  return changed ? { ...wf, nodes, updatedAt: new Date().toISOString() } : wf;
+}
+
+export function applyDefaultPlaywrightSettings(wf: Workflow): Workflow {
+  let changed = false;
+  const nodes = wf.nodes.map((node) => {
+    if (node.data.nodeType !== 'playwright-mcp') return node;
+    const cfg = { ...(node.data.config as Record<string, unknown> | undefined) };
+    let nodeChanged = false;
+    if (!cfg.playwrightBaseUrl) {
+      cfg.playwrightBaseUrl = DEFAULT_PLAYWRIGHT_BASE_URL;
+      nodeChanged = true;
+    }
+    if (!cfg.playwrightAction) {
+      const label = node.data.label.toLowerCase();
+      cfg.playwrightAction = label.includes('execute') || label.includes('re-run') ? 'execute' : 'locators';
+      nodeChanged = true;
+    }
+    if (!nodeChanged) return node;
+    changed = true;
+    return { ...node, data: { ...node.data, config: cfg } };
+  });
+
+  let next: Workflow = changed ? { ...wf, nodes, updatedAt: new Date().toISOString() } : wf;
+  if (next.id === USER_STORY_WORKFLOW_ID && next.defaultInput) {
+    try {
+      const parsed = JSON.parse(next.defaultInput) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && !parsed.baseUrl) {
+        next = {
+          ...next,
+          defaultInput: JSON.stringify({ ...parsed, baseUrl: DEFAULT_PLAYWRIGHT_BASE_URL }),
+          updatedAt: new Date().toISOString(),
+        };
+      }
+    } catch {
+      // keep the stored input
+    }
+  }
+  return next;
+}
+
+export function applyStudioDefaults(wf: Workflow): Workflow {
+  return applyDefaultPlaywrightSettings(applyDefaultAdoSettings(wf));
+}
 
 export function needsUserStoryUpgrade(wf: Workflow): boolean {
   if (wf.id !== USER_STORY_WORKFLOW_ID) return false;
@@ -13,8 +85,8 @@ export function needsUserStoryUpgrade(wf: Workflow): boolean {
 }
 
 export function mergeUserStoryWorkflow(stored: Workflow, seed: Workflow): Workflow {
-  if (!needsUserStoryUpgrade(stored)) return bindReadyAgents(stored);
-  return bindReadyAgents({
+  if (!needsUserStoryUpgrade(stored)) return applyStudioDefaults(bindReadyAgents(stored));
+  return applyStudioDefaults(bindReadyAgents({
     ...stored,
     description: seed.description,
     version: seed.version,
@@ -22,7 +94,7 @@ export function mergeUserStoryWorkflow(stored: Workflow, seed: Workflow): Workfl
     nodes: seed.nodes,
     edges: seed.edges,
     updatedAt: new Date().toISOString(),
-  });
+  }));
 }
 
 function defaultBindings(node: WorkflowNode, agents: Agent[]): InputBinding[] | undefined {

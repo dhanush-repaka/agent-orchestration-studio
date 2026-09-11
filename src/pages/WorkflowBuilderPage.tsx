@@ -8,6 +8,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { useStore, newAgentSkeleton, newWorkflowSkeleton } from '@/store';
 import { StudioNode } from '@/components/StudioNode';
+import { RunLivePanel } from '@/components/RunLivePanel';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import { NodeInspector, WorkflowSettingsPanel, defaultNodeConfig } from '@/components/NodeInspector';
@@ -20,7 +21,8 @@ import {
 import {
   Play, Save, Download, Upload, Copy, Lock, Undo2, Redo2,
   Plus, X, Search, CheckCircle2, AlertCircle, AlertTriangle,
-  UserCheck, MousePointerClick,
+  UserCheck, MousePointerClick, PanelLeftClose, PanelLeftOpen,
+  PanelRightClose, PanelRightOpen,
 } from 'lucide-react';
 
 const nodeTypes = { studioNode: StudioNode };
@@ -92,6 +94,8 @@ function BuilderInner() {
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [configs, setConfigs] = useState<Record<string, NodeConfig>>({});
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true); // builder side docks
   const fileInputRef = useRef<HTMLInputElement>(null);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
@@ -113,16 +117,23 @@ function BuilderInner() {
     }
   }, [wf?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Update node status during run
+  // Update node status during and after a run
   useEffect(() => {
-    if (runningWorkflowId === wf?.id) {
+    if (!wf) return;
+    if (runningWorkflowId === wf.id || Object.keys(runStatus).length > 0) {
       setNodes((nds) => nds.map((n) => {
         const rs = runStatus[n.id];
         if (rs) return { ...n, data: { ...n.data, status: rs } };
         return n;
       }));
     }
-  }, [runStatus, runningWorkflowId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [runStatus, runningWorkflowId, wf?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (pendingApproval?.workflowId === wf?.id) {
+      setSelectedNodeId(pendingApproval.nodeId);
+    }
+  }, [pendingApproval?.nodeId, pendingApproval?.workflowId, wf?.id]);
 
   const pushHistory = useCallback((n: Node[], e: Edge[]) => {
     setHistory((h) => {
@@ -144,11 +155,13 @@ function BuilderInner() {
   const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
     setSelectedNodeId(node.id);
     setSelectedEdgeId(null);
+    setRightOpen(true);
   }, []);
 
   const onEdgeClick: EdgeMouseHandler = useCallback((_, edge) => {
     setSelectedEdgeId(edge.id);
     setSelectedNodeId(null);
+    setRightOpen(true);
   }, []);
 
   const onPaneClick = useCallback(() => {
@@ -490,8 +503,33 @@ function BuilderInner() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left palette */}
+        {!leftOpen ? (
+          <aside className="w-10 shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col items-center py-3">
+            <button
+              type="button"
+              onClick={() => setLeftOpen(true)}
+              className="btn-ghost p-2"
+              aria-label="Expand node palette"
+              title="Expand node palette"
+            >
+              <PanelLeftOpen className="w-4 h-4" />
+            </button>
+          </aside>
+        ) : (
         <aside className="w-60 shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col">
           <div className="p-3 border-b border-slate-200 dark:border-slate-800">
+            <div className="flex items-center gap-1.5 mb-2">
+              <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex-1">Nodes</p>
+              <button
+                type="button"
+                onClick={() => setLeftOpen(false)}
+                className="btn-ghost p-1"
+                aria-label="Collapse node palette"
+                title="Collapse node palette"
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </button>
+            </div>
             <div className="relative">
               <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
@@ -545,6 +583,7 @@ function BuilderInner() {
             })}
           </div>
         </aside>
+        )}
 
         {/* Canvas */}
         <div className="flex-1 relative" ref={reactFlowWrapper}>
@@ -576,6 +615,7 @@ function BuilderInner() {
               nodeColor={(n) => {
                 const d = n.data as WorkflowNodeData;
                 if (d.status === 'running') return '#f59e0b';
+                if (d.status === 'waiting-approval') return '#a855f7';
                 if (d.status === 'completed') return '#10b981';
                 if (d.status === 'failed') return '#ef4444';
                 return '#94a3b8';
@@ -586,13 +626,15 @@ function BuilderInner() {
 
           {/* Run overlay badge */}
           {isRunning && (
-            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 card px-4 py-2 flex items-center gap-2 bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-700">
-              <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-              <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
+            <div className={`absolute top-3 left-1/2 -translate-x-1/2 z-10 card px-4 py-2 flex items-center gap-2 ${pendingApproval ? 'bg-purple-50 dark:bg-purple-950 border-purple-300 dark:border-purple-700' : 'bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-700'}`}>
+              <div className={`w-2 h-2 rounded-full animate-pulse ${pendingApproval ? 'bg-purple-500' : 'bg-amber-500'}`} />
+              <span className={`text-sm font-medium ${pendingApproval ? 'text-purple-700 dark:text-purple-300' : 'text-amber-700 dark:text-amber-300'}`}>
                 {pendingApproval ? `Waiting for approval: ${pendingApproval.label}` : 'Executing workflow...'}
               </span>
             </div>
           )}
+
+          <RunLivePanel workflowId={wf.id} selectedNodeId={selectedNodeId} />
 
           {/* Empty canvas hint */}
           {nodes.length <= 2 && !isRunning && (
@@ -604,7 +646,19 @@ function BuilderInner() {
           )}
         </div>
 
-        {selectedNode && (
+        {!rightOpen ? (
+          <aside className="w-10 shrink-0 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col items-center py-3">
+            <button
+              type="button"
+              onClick={() => setRightOpen(true)}
+              className="btn-ghost p-2"
+              aria-label="Expand inspector"
+              title="Expand inspector"
+            >
+              <PanelRightOpen className="w-4 h-4" />
+            </button>
+          </aside>
+        ) : selectedNode ? (
           <NodeInspector
             selectedNode={selectedNode}
             nodes={nodes}
@@ -614,14 +668,18 @@ function BuilderInner() {
             onDuplicate={duplicateNode}
             onDelete={deleteNode}
             onClose={() => setSelectedNodeId(null)}
+            onCollapse={() => setRightOpen(false)}
           />
-        )}
-
-        {selectedEdge && !selectedNode && (
+        ) : selectedEdge ? (
           <aside className="w-[22rem] shrink-0 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col">
             <div className="p-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Connection</h3>
-              <button onClick={() => setSelectedEdgeId(null)} className="btn-ghost p-1" aria-label="Close connection inspector"><X className="w-4 h-4" /></button>
+              <div className="flex items-center gap-0.5">
+                <button onClick={() => setRightOpen(false)} className="btn-ghost p-1" aria-label="Collapse connection inspector">
+                  <PanelRightClose className="w-4 h-4" />
+                </button>
+                <button onClick={() => setSelectedEdgeId(null)} className="btn-ghost p-1" aria-label="Close connection inspector"><X className="w-4 h-4" /></button>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               <div>
@@ -646,9 +704,7 @@ function BuilderInner() {
               <button onClick={deleteEdge} className="btn-danger text-sm w-full justify-center">Delete connection</button>
             </div>
           </aside>
-        )}
-
-        {!selectedNode && !selectedEdge && (
+        ) : (
           <WorkflowSettingsPanel
             name={wf.name}
             description={wf.description}
@@ -660,6 +716,7 @@ function BuilderInner() {
             scheduleCron={wf.scheduleCron}
             workflowId={wf.id}
             onChange={(patch) => updateWorkflow(wf.id, patch as Partial<typeof wf>)}
+            onCollapse={() => setRightOpen(false)}
           />
         )}
       </div>

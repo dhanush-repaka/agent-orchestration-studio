@@ -11,6 +11,7 @@ interface RetrieveRequest {
   workItemId: number | string;
   adoOrg?: string;
   adoApiVersion?: string;
+  adoPat?: string;
 }
 
 Deno.serve(async (req: Request) => {
@@ -64,7 +65,19 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const adoPat = credRow?.value ?? "";
+    const incomingPat = typeof body.adoPat === "string" ? body.adoPat.trim() : "";
+    const adoPat = incomingPat || credRow?.value || Deno.env.get("ADO_PAT") || "";
+
+    if (incomingPat) {
+      await supabase.from("credentials").upsert({
+        id: "c1",
+        name: "Azure DevOps PAT",
+        type: "api-key",
+        value: incomingPat,
+        environment: "production",
+        updated_at: new Date().toISOString(),
+      });
+    }
 
     if (!adoPat) {
       return new Response(

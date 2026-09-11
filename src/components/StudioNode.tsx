@@ -1,7 +1,9 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { useStore } from '@/store';
 import { Icon } from '@/components/Icon';
 import { getStatusStyle } from '@/components/StatusBadge';
+import { previewRunOutput } from '@/lib/output';
 import type { WorkflowNodeData } from '@/types';
 import { AlertCircle } from 'lucide-react';
 
@@ -23,22 +25,27 @@ const NODE_ICONS: Record<string, string> = {
   teams: 'MessageSquare', slack: 'Hash', powerbi: 'BarChart3', 'rest-api': 'Webhook',
 };
 
-function StudioNodeComponent({ data, selected }: NodeProps) {
+function StudioNodeComponent({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as WorkflowNodeData;
+  const runOutput = useStore((s) => s.runOutputs[id]);
+  const runError = useStore((s) => s.runErrors[id]);
+  const pending = useStore((s) => s.pendingApproval);
   const status = nodeData.status;
   const style = getStatusStyle(status);
   const iconName = nodeData.icon || NODE_ICONS[nodeData.nodeType] || nodeData.nodeType;
   const kindColor = KIND_COLORS[nodeData.kind] ?? KIND_COLORS.control;
   const isRunning = status === 'running';
   const isFailed = status === 'failed';
+  const isWaiting = status === 'waiting-approval' || pending?.nodeId === id;
   const notConfigured = status === 'not-configured' || (nodeData.kind === 'agent' && !nodeData.agentId);
   const subtitle = nodeData.kind === 'agent'
     ? (nodeData.agentType || nodeData.nodeType)
     : nodeData.nodeType;
+  const preview = runError || (runOutput ? previewRunOutput(runOutput, 160) : '');
 
   return (
     <div
-      className={`relative rounded-xl border-2 px-3 py-2.5 min-w-48 max-w-60 transition-all ${kindColor} ${selected ? 'ring-2 ring-brand-400 ring-offset-2 dark:ring-offset-slate-950' : ''} ${isRunning ? 'ring-2 ring-amber-400 animate-pulse-soft' : ''} ${isFailed ? 'ring-2 ring-red-400' : ''}`}
+      className={`relative rounded-xl border-2 px-3 py-2.5 min-w-48 max-w-64 transition-all ${kindColor} ${selected ? 'ring-2 ring-brand-400 ring-offset-2 dark:ring-offset-slate-950' : ''} ${isRunning ? 'ring-2 ring-amber-400 animate-pulse-soft' : ''} ${isFailed ? 'ring-2 ring-red-400' : ''} ${isWaiting ? 'ring-2 ring-purple-400' : ''}`}
     >
       {nodeData.nodeType !== 'start' && (
         <Handle type="target" position={Position.Left} className="w-3 h-3 bg-slate-400 dark:bg-slate-500 border-2 border-white dark:border-slate-900" />
@@ -68,6 +75,12 @@ function StudioNodeComponent({ data, selected }: NodeProps) {
         <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
         <span className={`text-[10px] ${style.text}`}>{notConfigured && nodeData.kind === 'agent' && !nodeData.agentId ? 'Unbound' : style.label}</span>
       </div>
+
+      {preview && (
+        <pre className={`nowheel nodrag mt-1.5 text-[10px] leading-snug rounded-md px-1.5 py-1 max-h-14 overflow-hidden font-mono whitespace-pre-wrap break-all ${runError ? 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/70' : 'text-slate-600 dark:text-slate-300 bg-white/70 dark:bg-slate-950/50'}`}>
+          {preview}
+        </pre>
+      )}
     </div>
   );
 }

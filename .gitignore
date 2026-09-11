@@ -21,4 +21,9 @@ dist-ssr
 *.sln
 *.sw?
 .env
+.ado-pat
+.aos-runs/
+test-results/
+playwright-report/
+blob-report/
 .gstack/

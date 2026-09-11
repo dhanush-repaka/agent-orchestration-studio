@@ -263,6 +263,7 @@ export interface NodeRuntimeConfig {
   httpBody?: string;
   httpCredentialId?: string;
   playwrightAction?: 'locators' | 'execute';
+  playwrightBaseUrl?: string;
 }
 
 export interface WorkflowNodeData extends Record<string, unknown> {
@@ -389,6 +390,16 @@ export interface WorkflowRun {
   runtimeInput?: string;
   approvalNodeId?: string;
   approvalDecision?: boolean | null;
+  /** Previous-node output shown to the human reviewer while paused. */
+  approvalReview?: string;
+}
+
+export interface PendingApproval {
+  workflowId: string;
+  nodeId: string;
+  label: string;
+  reviewOutput?: string;
+  approver?: string;
 }
 
 export interface Prompt {

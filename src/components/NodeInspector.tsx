@@ -4,6 +4,7 @@ import { useStore, newAgentSkeleton } from '@/store';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import { isHttpNodeType, newWebhookSecret } from '@/lib/http';
+import { formatRunOutput } from '@/lib/output';
 import {
   PROMPT_VARIABLES,
   type Agent, type InputBinding, type NodeRuntimeConfig, type WorkflowNodeData,
@@ -11,6 +12,7 @@ import {
 import {
   Settings2, X, Copy, Trash2, Upload, Boxes, ExternalLink, Plus,
   Bot, ArrowDownToLine, MessageSquareText, Cpu, Wrench, Timer, ArrowRight,
+  PanelRightClose,
 } from 'lucide-react';
 
 type Tab = 'agent' | 'io' | 'prompt' | 'model' | 'tools' | 'runtime';
@@ -42,14 +44,20 @@ interface Props {
   onDuplicate: () => void;
   onDelete: () => void;
   onClose: () => void;
+  onCollapse?: () => void;
 }
 
-export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate, onDuplicate, onDelete, onClose }: Props) {
+export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate, onDuplicate, onDelete, onClose, onCollapse }: Props) {
   const agents = useStore((s) => s.agents);
   const setPage = useStore((s) => s.setPage);
   const setSelectedAgent = useStore((s) => s.setSelectedAgent);
   const createAgent = useStore((s) => s.createAgent);
   const addToast = useStore((s) => s.addToast);
+  const runOutput = useStore((s) => s.runOutputs[selectedNode.id]);
+  const runError = useStore((s) => s.runErrors[selectedNode.id]);
+  const pendingApproval = useStore((s) => s.pendingApproval);
+  const approveRun = useStore((s) => s.approveRun);
+  const rejectRun = useStore((s) => s.rejectRun);
   const [tab, setTab] = useState<Tab>('agent');
 
   const data = selectedNode.data as WorkflowNodeData;
@@ -105,7 +113,14 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
           <Settings2 className="w-4 h-4 text-brand-600 dark:text-brand-400 shrink-0" />
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white truncate">{data.label}</h3>
         </div>
-        <button onClick={onClose} className="btn-ghost p-1" aria-label="Close inspector"><X className="w-4 h-4" /></button>
+        <div className="flex items-center gap-0.5 shrink-0">
+          {onCollapse && (
+            <button onClick={onCollapse} className="btn-ghost p-1" aria-label="Collapse inspector">
+              <PanelRightClose className="w-4 h-4" />
+            </button>
+          )}
+          <button onClick={onClose} className="btn-ghost p-1" aria-label="Close inspector"><X className="w-4 h-4" /></button>
+        </div>
       </div>
 
       <div className="px-2 pt-2 flex gap-0.5 overflow-x-auto border-b border-slate-200 dark:border-slate-800" role="tablist" aria-label="Node inspector">
@@ -123,6 +138,23 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {(runOutput || runError || pendingApproval?.nodeId === selectedNode.id) && (
+          <div className={`rounded-lg border p-3 space-y-2 ${pendingApproval?.nodeId === selectedNode.id ? 'border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/40' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40'}`}>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              {pendingApproval?.nodeId === selectedNode.id ? 'Output awaiting approval' : 'Latest output'}
+            </p>
+            {runError && <p className="text-xs text-red-600 dark:text-red-400">{runError}</p>}
+            <pre className="max-h-40 overflow-auto rounded-md bg-white dark:bg-slate-950 px-2 py-1.5 text-[11px] font-mono whitespace-pre-wrap break-words text-slate-700 dark:text-slate-200">
+              {formatRunOutput(pendingApproval?.nodeId === selectedNode.id ? pendingApproval.reviewOutput ?? runOutput : runOutput) || 'No output yet'}
+            </pre>
+            {pendingApproval?.nodeId === selectedNode.id && (
+              <div className="flex gap-2">
+                <button type="button" onClick={rejectRun} className="btn-danger text-xs flex-1 justify-center">Reject</button>
+                <button type="button" onClick={approveRun} className="btn-primary text-xs flex-1 justify-center">Approve</button>
+              </div>
+            )}
+          </div>
+        )}
         {tab === 'agent' && (
           <>
             <Field label="Node Name">
@@ -192,6 +224,9 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
             )}
             {isHttpNodeType(data.nodeType) && (
               <HttpRequestFields cfg={cfg} setCfg={setCfg} />
+            )}
+            {data.nodeType === 'playwright-mcp' && (
+              <PlaywrightFields cfg={cfg} setCfg={setCfg} />
             )}
           </>
         )}
@@ -580,6 +615,34 @@ function RuntimeTab({
   );
 }
 
+function PlaywrightFields({ cfg, setCfg }: { cfg: NodeRuntimeConfig; setCfg: (patch: Partial<NodeRuntimeConfig>) => void }) {
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        Execute runs the generated spec in local Chromium. Locator discovery also opens the target app.
+      </p>
+      <Field label="Action">
+        <select
+          className="input text-xs"
+          value={cfg.playwrightAction ?? 'execute'}
+          onChange={(e) => setCfg({ playwrightAction: e.target.value as NodeRuntimeConfig['playwrightAction'] })}
+        >
+          <option value="execute">Execute tests</option>
+          <option value="locators">Discover locators</option>
+        </select>
+      </Field>
+      <Field label="Base URL">
+        <input
+          className="input font-mono text-xs"
+          placeholder="https://parabank.parasoft.com/parabank"
+          value={cfg.playwrightBaseUrl ?? ''}
+          onChange={(e) => setCfg({ playwrightBaseUrl: e.target.value })}
+        />
+      </Field>
+    </div>
+  );
+}
+
 function HttpRequestFields({ cfg, setCfg }: { cfg: NodeRuntimeConfig; setCfg: (patch: Partial<NodeRuntimeConfig>) => void }) {
   const credentials = useStore((s) => s.credentials);
   return (
@@ -615,7 +678,7 @@ function HttpRequestFields({ cfg, setCfg }: { cfg: NodeRuntimeConfig; setCfg: (p
 
 export function WorkflowSettingsPanel({
   name, description, triggerType, defaultInput, failurePolicy, maxExecutionTimeSec,
-  webhookSecret, scheduleCron, workflowId, onChange, onClose,
+  webhookSecret, scheduleCron, workflowId, onChange, onClose, onCollapse,
 }: {
   name: string;
   description: string;
@@ -628,6 +691,7 @@ export function WorkflowSettingsPanel({
   workflowId: string;
   onChange: (patch: Record<string, unknown>) => void;
   onClose?: () => void;
+  onCollapse?: () => void;
 }) {
   const addToast = useStore((s) => s.addToast);
   const base = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -657,7 +721,14 @@ export function WorkflowSettingsPanel({
           <Icon name="Settings" className="w-4 h-4 text-brand-600" />
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Workflow</h3>
         </div>
-        {onClose && <button onClick={onClose} className="btn-ghost p-1" aria-label="Close workflow settings"><X className="w-4 h-4" /></button>}
+        <div className="flex items-center gap-0.5">
+          {onCollapse && (
+            <button onClick={onCollapse} className="btn-ghost p-1" aria-label="Collapse workflow settings">
+              <PanelRightClose className="w-4 h-4" />
+            </button>
+          )}
+          {onClose && <button onClick={onClose} className="btn-ghost p-1" aria-label="Close workflow settings"><X className="w-4 h-4" /></button>}
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         <Field label="Name"><input className="input" value={name} onChange={(e) => onChange({ name: e.target.value })} /></Field>

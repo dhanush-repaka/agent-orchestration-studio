@@ -1,7 +1,50 @@
+const ADO_SLUGS = new Set(['ado-retrieval', 'ado-upload']);
+
+function withLocalAdoSecrets(slug: string, payload: Record<string, unknown>): Record<string, unknown> {
+  if (!ADO_SLUGS.has(slug) || typeof localStorage === 'undefined') return payload;
+  const adoPat = localStorage.getItem('aos-ado-pat');
+  const adoOrg = payload.adoOrg || localStorage.getItem('aos-ado-org');
+  return {
+    ...payload,
+    ...(adoOrg ? { adoOrg } : {}),
+    ...(adoPat ? { adoPat } : {}),
+  };
+}
+
+const LOCAL_SLUGS: Record<string, string> = {
+  'ado-retrieval': '/__studio/ado-retrieval',
+  'playwright-execute': '/__studio/playwright-execute',
+  'playwright-locators': '/__studio/playwright-locators',
+};
+
 export async function callEdgeFunction<T = unknown>(
   slug: string,
   payload: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; data: T }> {
+  const body = withLocalAdoSecrets(slug, payload);
+  const localPath = import.meta.env.DEV ? LOCAL_SLUGS[slug] : undefined;
+  if (localPath) {
+    try {
+      const localRes = await fetch(localPath, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const localData = (await localRes.json().catch(() => ({}))) as T;
+      if (localRes.ok || slug.startsWith('playwright-')) {
+        return { ok: localRes.ok, status: localRes.status, data: localData };
+      }
+    } catch (err) {
+      if (slug.startsWith('playwright-')) {
+        return {
+          ok: false,
+          status: 0,
+          data: { error: err instanceof Error ? err.message : 'Playwright runner is not available' } as T,
+        };
+      }
+      // Fall through to the deployed function for ADO.
+    }
+  }
   const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${slug}`;
   try {
     const res = await fetch(fnUrl, {
@@ -10,7 +53,7 @@ export async function callEdgeFunction<T = unknown>(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body),
     });
     const data = (await res.json().catch(() => ({}))) as T;
     return { ok: res.ok, status: res.status, data };

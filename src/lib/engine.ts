@@ -3,6 +3,14 @@ import type {
   LogEntry, NodeStatus, NodeRuntimeConfig, InputBinding, RunStatus,
 } from '../types';
 import { evaluateCondition, getByPath, interpolate, parseJson, type InterpContext } from './interpolate';
+import {
+  extractLocators,
+  extractPlaywrightSpec,
+  findLatestPlaywrightExecute,
+  playwrightUnavailableResult,
+  resolvePlaywrightBaseUrl,
+  rewriteSpecUrls,
+} from './playwrightSpec';
 
 export type InvokeFn = <T = unknown>(
   slug: string,
@@ -41,10 +49,16 @@ export type ReplayResume = {
   priorExecutions: NodeExecution[];
 };
 
+export type ApprovalReview = {
+  output?: string;
+  approver?: string;
+};
+
 export interface EngineCallbacks {
   isCancelled: () => boolean;
   onNodeStatus: (nodeId: string, status: NodeStatus) => void;
-  waitForApproval: (nodeId: string, label: string) => Promise<boolean>;
+  onNodeOutput?: (nodeId: string, output: string, error?: string) => void;
+  waitForApproval: (nodeId: string, label: string, review?: ApprovalReview) => Promise<boolean>;
 }
 
 function asConfig(raw: unknown): NodeRuntimeConfig {
@@ -76,44 +90,6 @@ function stringifyOutput(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function extractLocators(source: string): string[] {
-  const found = new Set<string>();
-  const re = /(?:getByRole|getByLabel|getByText|getByPlaceholder|getByTestId|getByTitle|locator)\(([^)]+)\)/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(source))) {
-    found.add(match[0]);
-    if (found.size >= 20) break;
-  }
-  return [...found];
-}
-
-function reviewScore(value: unknown): number | null {
-  if (!value || typeof value !== 'object') return null;
-  const score = (value as { score?: unknown }).score;
-  return typeof score === 'number' ? score : null;
-}
-
-function playwrightExecuteResult(previousRaw: string, upstream: Record<string, unknown>): Record<string, unknown> {
-  const previous = parseMaybeJson(previousRaw);
-  const score = reviewScore(previous) ?? Object.values(upstream).map(reviewScore).find((n) => n != null) ?? 8;
-  const passed = score >= 6;
-  const titles = extractTestCases({ ...upstream, previous })?.map((item) => {
-    const rec = item as Record<string, unknown>;
-    return String(rec.title ?? rec.id ?? 'generated test');
-  }) ?? ['generated spec'];
-  return {
-    passed,
-    total: titles.length,
-    failed: passed ? 0 : Math.max(1, Math.floor(titles.length / 2)),
-    results: titles.map((title, i) => ({
-      title,
-      status: !passed && i === 0 ? 'failed' : 'passed',
-    })),
-    score,
-    source: 'playwright-mcp',
-  };
 }
 
 function predecessors(nodeId: string, edges: WorkflowEdge[]): string[] {
@@ -388,6 +364,15 @@ async function runAgentNode(
     workflowInput,
   };
 
+  if (agent.type === 'Playwright Automation') {
+    const baseUrl = resolvePlaywrightBaseUrl(cfg, workflowInput);
+    payload.userPrompt = `${payload.userPrompt ?? ''}\n\nTarget application base URL: ${baseUrl}\nUse full URLs or paths without a leading slash (page.goto("register.htm"), not page.goto("/register.htm")). For Parabank registration use ${baseUrl}/register.htm and unique usernames. Prefer these field names: customer.firstName, customer.lastName, customer.address.street, customer.address.city, customer.address.state, customer.address.zipCode, customer.phoneNumber, customer.ssn, customer.username, customer.password, repeatedPassword. Return ONLY TypeScript for @playwright/test.`;
+  }
+  if (agent.type === 'Report Generator') {
+    const execute = findLatestPlaywrightExecute(nodeOutputs);
+    payload.userPrompt = `${payload.userPrompt ?? ''}\n\nAuthoritative Playwright results (use these; do not write a report that only restates a condition expression):\n${stringifyOutput(execute ?? { error: 'No Playwright execute result found' })}`;
+  }
+
   log('info', 'agent', `Calling ${agent.displayName} (${agent.modelProvider} / ${agent.modelName})`);
   const { ok, data } = await invoke<AgentProcessorResult>('agent-processor', payload as unknown as Record<string, unknown>);
   if (!ok || data.error) {
@@ -598,20 +583,60 @@ export async function executeWorkflow(opts: {
             ?? (node.data.label.toLowerCase().includes('execute') || node.data.label.toLowerCase().includes('re-run')
               ? 'execute'
               : 'locators');
+          const upstream = collectUpstream(currentId, wf, nodeOutputs, nodes, agentMap);
+          const spec = extractPlaywrightSpec(predOut, { ...upstream, previous: parseMaybeJson(predOut) });
+          const baseUrl = resolvePlaywrightBaseUrl(cfg, workflowInput);
           if (action === 'execute') {
-            const upstream = collectUpstream(currentId, wf, nodeOutputs, nodes, agentMap);
-            output = JSON.stringify(playwrightExecuteResult(predOut, upstream), null, 2);
-            addLog('info', 'tool', `Playwright execute: ${output.includes('"passed": true') ? 'passed' : 'failed'}`, currentId);
+            if (!spec) {
+              const missing = playwrightUnavailableResult('No Playwright spec found upstream. Code generation must emit @playwright/test TypeScript.');
+              output = JSON.stringify(missing, null, 2);
+              error = String(missing.error);
+              status = 'failed';
+              addLog('error', 'tool', error, currentId);
+              break;
+            }
+            addLog('info', 'tool', `Running Playwright against ${baseUrl}`, currentId);
+            const { ok, data } = await invoke<Record<string, unknown>>('playwright-execute', {
+              spec: rewriteSpecUrls(spec, baseUrl),
+              baseUrl,
+              timeoutSec: cfg.timeoutSec,
+            });
+            const err = typeof data.error === 'string' ? data.error : undefined;
+            if (!ok && data.source === 'unavailable') {
+              status = 'failed';
+              error = err ?? 'Playwright runner is not available';
+            }
+            output = JSON.stringify({
+              ...data,
+              passed: data.passed === true,
+              source: data.source ?? (ok ? 'playwright' : 'unavailable'),
+              spec,
+            }, null, 2);
+            addLog(
+              data.passed === true ? 'info' : 'warning',
+              'tool',
+              `Playwright execute: ${data.passed === true ? 'passed' : 'failed'}${err ? ` — ${err}` : ''}`,
+              currentId,
+            );
           } else {
-            const locators = extractLocators(predOut);
+            const fromSpec = extractLocators(spec || predOut);
+            const { ok, data } = await invoke<Record<string, unknown>>('playwright-locators', {
+              baseUrl,
+              spec,
+              paths: ['/', '/register.htm'],
+            });
+            const live = ok && Array.isArray(data.locators) ? data.locators.map(String) : [];
+            const locators = [...new Set([...fromSpec, ...live])];
             output = JSON.stringify({
               locators: locators.length ? locators : ['page.locator("body")'],
-              source: 'playwright-mcp',
-              spec: predOut,
+              source: live.length ? 'playwright' : 'playwright-mcp',
+              spec: spec || predOut,
+              baseUrl,
+              pages: data.pages ?? null,
             }, null, 2);
             addLog('info', 'tool', `Discovered ${locators.length || 1} locator(s)`, currentId);
           }
-          toolCalls = [{ tool: 'Playwright MCP', result: action }];
+          toolCalls = [{ tool: 'Playwright', result: action }];
           break;
         }
         case 'azure-devops':
@@ -650,9 +675,20 @@ export async function executeWorkflow(opts: {
         case 'router': {
           const ctx = buildInterpCtx(wf, workflowInput, nodeOutputs, nodes, currentId);
           const truthy = evaluateCondition(String(cfg.expression ?? ''), ctx);
-          output = JSON.stringify({ result: truthy, expression: cfg.expression ?? '' });
+          const execute = findLatestPlaywrightExecute(nodeOutputs);
+          output = JSON.stringify({
+            result: truthy,
+            passed: truthy,
+            expression: cfg.expression ?? '',
+            evaluated: interpolate(String(cfg.expression ?? ''), ctx),
+            execute,
+            workItemId: workflowInput && typeof workflowInput === 'object'
+              ? (workflowInput as Record<string, unknown>).workItemId ?? null
+              : null,
+          });
           addLog('info', 'system', `Condition ${truthy ? 'true' : 'false'}: ${cfg.expression || '(empty)'}`, currentId);
           callbacks.onNodeStatus(currentId, 'completed');
+          callbacks.onNodeOutput?.(currentId, output);
           completed.add(currentId);
           nodeOutputs[currentId] = output;
           enqueue(pickConditionEdges(node, wf.edges, truthy));
@@ -673,13 +709,27 @@ export async function executeWorkflow(opts: {
           continue;
         }
         case 'approval': {
+          const review = predOut || nodeInput;
           callbacks.onNodeStatus(currentId, 'waiting-approval');
           addLog('info', 'system', `Waiting for approval${cfg.approver ? ` from ${cfg.approver}` : ''}`, currentId);
-          await persist('waiting-approval', { approvalNodeId: currentId, approvalDecision: null });
-          const approved = await callbacks.waitForApproval(currentId, node.data.label);
-          if (callbacks.isCancelled() || !approved) {
+          await persist('waiting-approval', {
+            approvalNodeId: currentId,
+            approvalDecision: null,
+            approvalReview: review,
+          });
+          const approved = await callbacks.waitForApproval(currentId, node.data.label, {
+            output: review,
+            approver: cfg.approver,
+          });
+          if (callbacks.isCancelled()) {
+            runStatus = 'cancelled';
             status = 'failed';
-            error = approved ? 'Cancelled' : 'Approval rejected';
+            error = 'Cancelled';
+            runFailed = true;
+            output = JSON.stringify({ approved: false, cancelled: true });
+          } else if (!approved) {
+            status = 'failed';
+            error = 'Approval rejected';
             runFailed = true;
             output = JSON.stringify({ approved: false });
           } else {
@@ -743,6 +793,7 @@ export async function executeWorkflow(opts: {
     totalTokens += tokens;
     estimatedCost += cost;
     callbacks.onNodeStatus(currentId, status);
+    callbacks.onNodeOutput?.(currentId, output ?? '', error);
     completed.add(currentId);
     nodeExecutions.push({
       nodeId: currentId,
@@ -764,8 +815,22 @@ export async function executeWorkflow(opts: {
       endedAt: new Date().toISOString(),
     });
 
-    if (status === 'failed' && wf.failurePolicy === 'abort') {
-      addLog('error', 'system', 'Aborting workflow after node failure');
+    const abortNow = status === 'failed' && (
+      wf.failurePolicy === 'abort'
+      || node.data.nodeType === 'approval'
+      || runStatus === 'cancelled'
+    );
+    if (abortNow) {
+      addLog(
+        'error',
+        'system',
+        error === 'Approval rejected'
+          ? 'Approval rejected, workflow stopped'
+          : runStatus === 'cancelled'
+            ? 'Workflow cancelled'
+            : 'Aborting workflow after node failure',
+      );
+      await persist(runStatus === 'cancelled' ? 'cancelled' : 'running');
       break;
     }
 

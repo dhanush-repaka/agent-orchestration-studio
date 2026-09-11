@@ -3,7 +3,7 @@ import { executeWorkflow, type ReplayResume } from '@/lib/engine';
 import type {
   Agent, Workflow, WorkflowRun, Environment, NodeStatus, RunStatus,
   WorkflowNode, WorkflowEdge, Prompt, Credential, Integration,
-  Evaluation, KnowledgeConnection, AuditLog,
+  Evaluation, KnowledgeConnection, AuditLog, PendingApproval,
 } from '@/types';
 import {
   AGENTS, WORKFLOWS, SAMPLE_WORKFLOW, WORKFLOW_RUNS, PROMPTS, CREDENTIALS,
@@ -17,11 +17,12 @@ import { uniquePrefixedId } from '@/lib/ids';
 import { logStoreError, isMissingRelation, isTransientNetworkError } from '@/lib/network';
 import { resolveRerunInput } from '@/lib/rerun';
 import { replaySeed } from '@/lib/replay';
+import { mapsFromRun, pendingFromRun } from '@/lib/output';
 import { interpolate } from '@/lib/interpolate';
 import { loadCatalogs, saveCatalogs, type CatalogSnapshot } from '@/lib/catalog';
 import { isScheduleDue } from '@/lib/cron';
 import { callEdgeFunction } from '@/lib/api';
-import { mergeUserStoryWorkflow, needsUserStoryUpgrade, USER_STORY_WORKFLOW_ID } from '@/lib/workflowSetup';
+import { applyStudioDefaults, mergeUserStoryWorkflow, needsUserStoryUpgrade, USER_STORY_WORKFLOW_ID } from '@/lib/workflowSetup';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -205,7 +206,9 @@ interface AppState {
   runningWorkflowId: string | null;
   serverRunId: string | null;
   runStatus: Record<string, NodeStatus>;
-  pendingApproval: { workflowId: string; nodeId: string; label: string } | null;
+  runOutputs: Record<string, string>;
+  runErrors: Record<string, string>;
+  pendingApproval: PendingApproval | null;
   startRun: (workflowId: string, runtimeInput?: string, resume?: ReplayResume) => void;
   rerunFrom: (runId: string) => void;
   replayFrom: (runId: string, nodeId: string) => void;
@@ -692,10 +695,13 @@ export const useStore = create<AppState>((set, get) => ({
   runningWorkflowId: null,
   serverRunId: null,
   runStatus: {},
+  runOutputs: {},
+  runErrors: {},
   pendingApproval: null,
   startRun: (workflowId, runtimeInput, resume) => {
-    const wf = get().workflows.find((w) => w.id === workflowId);
-    if (!wf) return;
+    const found = get().workflows.find((w) => w.id === workflowId);
+    if (!found) return;
+    const wf = applyStudioDefaults(found);
     const statusMap: Record<string, NodeStatus> = {};
     wf.nodes.forEach((n) => {
       statusMap[n.id] = resume?.nodeOutputs[n.id] ? 'completed' : 'ready';
@@ -725,18 +731,39 @@ export const useStore = create<AppState>((set, get) => ({
       runningWorkflowId: workflowId,
       serverRunId: runId,
       runStatus: statusMap,
+      runOutputs: { ...(resume?.nodeOutputs ?? {}) },
+      runErrors: {},
       pendingApproval: null,
       runs: [stub, ...get().runs.filter((r) => r.id !== runId)],
     });
     persistRun(stub);
 
+    const applyLiveRun = (run: WorkflowRun) => {
+      const maps = mapsFromRun(run);
+      set((s) => ({
+        runs: [run, ...s.runs.filter((r) => r.id !== run.id)],
+        runStatus: { ...s.runStatus, ...maps.runStatus },
+        runOutputs: { ...s.runOutputs, ...maps.runOutputs },
+        runErrors: { ...s.runErrors, ...maps.runErrors },
+      }));
+    };
+
+    const persistLive = (run: WorkflowRun) => {
+      applyLiveRun(run);
+      void persistRun(run);
+    };
+
     const finish = (run: WorkflowRun) => {
       if (gen !== runGeneration) return;
+      const maps = mapsFromRun(run);
       set((s) => ({
         runningWorkflowId: null,
         serverRunId: null,
         pendingApproval: null,
         runs: [run, ...s.runs.filter((r) => r.id !== run.id)],
+        runStatus: { ...s.runStatus, ...maps.runStatus },
+        runOutputs: { ...s.runOutputs, ...maps.runOutputs },
+        runErrors: { ...s.runErrors, ...maps.runErrors },
       }));
       persistRun(run);
       const ok = run.status === 'completed';
@@ -748,9 +775,15 @@ export const useStore = create<AppState>((set, get) => ({
       onNodeStatus: (nodeId: string, status: NodeStatus) => {
         set((s) => ({ runStatus: { ...s.runStatus, [nodeId]: status } }));
       },
-      waitForApproval: (nodeId: string, label: string) => new Promise<boolean>((resolve) => {
+      onNodeOutput: (nodeId: string, output: string, error?: string) => {
+        set((s) => ({
+          runOutputs: output ? { ...s.runOutputs, [nodeId]: output } : s.runOutputs,
+          runErrors: error ? { ...s.runErrors, [nodeId]: error } : s.runErrors,
+        }));
+      },
+      waitForApproval: (nodeId: string, label: string, review?: { output?: string; approver?: string }) => new Promise<boolean>((resolve) => {
         approvalWait = { resolve };
-        set({ pendingApproval: { workflowId, nodeId, label } });
+        set({ pendingApproval: { workflowId, nodeId, label, reviewOutput: review?.output, approver: review?.approver } });
         get().addToast(`Waiting for approval: ${label}`, 'info');
       }),
     };
@@ -763,11 +796,25 @@ export const useStore = create<AppState>((set, get) => ({
       invoke: callEdgeFunction,
       runId,
       resume,
-      persistProgress: persistRun,
+      persistProgress: persistLive,
       callbacks,
     });
 
     void (async () => {
+      // Local engine owns the Run button: it can wait for approval and call the
+      // Vite Playwright / ADO proxies. The deployed execute-workflow function
+      // cannot launch a browser.
+      if (import.meta.env.DEV) {
+        try {
+          finish(await runLocal());
+        } catch (err) {
+          if (gen !== runGeneration) return;
+          set({ runningWorkflowId: null, serverRunId: null, pendingApproval: null });
+          get().addToast(err instanceof Error ? err.message : 'Workflow failed', 'error');
+        }
+        return;
+      }
+
       const { ok, status, data } = await callEdgeFunction<WorkflowRun & { error?: string }>(
         'execute-workflow',
         {
@@ -809,17 +856,16 @@ export const useStore = create<AppState>((set, get) => ({
         await get().hydrateRuns();
         const run = get().runs.find((r) => r.id === runId);
         if (!run) continue;
-        const nextStatus: Record<string, NodeStatus> = { ...get().runStatus };
-        for (const ne of run.nodeExecutions) nextStatus[ne.nodeId] = ne.status;
-        let pending = get().pendingApproval;
-        if (run.status === 'waiting-approval') {
-          const nodeId = run.approvalNodeId ?? run.nodeExecutions.find((n) => n.status === 'waiting-approval')?.nodeId;
-          const label = run.nodeExecutions.find((n) => n.nodeId === nodeId)?.nodeLabel ?? 'Approval';
-          if (nodeId) pending = { workflowId, nodeId, label };
-        } else {
-          pending = null;
-        }
-        set({ runStatus: nextStatus, pendingApproval: pending });
+        const maps = mapsFromRun(run);
+        const pending = run.status === 'waiting-approval'
+          ? pendingFromRun(run, wf) ?? get().pendingApproval
+          : null;
+        set((s) => ({
+          runStatus: { ...s.runStatus, ...maps.runStatus },
+          runOutputs: { ...s.runOutputs, ...maps.runOutputs },
+          runErrors: { ...s.runErrors, ...maps.runErrors },
+          pendingApproval: pending,
+        }));
         if (run.status === 'waiting-approval') continue;
         if (isTerminalRun(run.status)) {
           finish(run);
@@ -882,7 +928,7 @@ export const useStore = create<AppState>((set, get) => ({
       const run = get().runs.find((r) => r.id === serverRunId);
       if (run) persistRun({ ...run, status: 'cancelled', approvalDecision: false });
     }
-    set({ runningWorkflowId: null, serverRunId: null, runStatus: {}, pendingApproval: null });
+    set({ runningWorkflowId: null, serverRunId: null, pendingApproval: null });
     get().addToast('Workflow execution cancelled', 'info');
   },
   approveRun: () => {
@@ -902,7 +948,7 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
     set({ pendingApproval: null });
-    get().addToast('Approval granted', 'success');
+    get().addToast('Approval granted, continuing workflow', 'success');
   },
   rejectRun: () => {
     approvalWait?.resolve(false);
@@ -920,7 +966,7 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
     set({ pendingApproval: null });
-    get().addToast('Approval rejected', 'error');
+    get().addToast('Approval rejected, run will be marked failed', 'error');
   },
   runNodeStatus: (workflowId, nodeId) => {
     if (get().runningWorkflowId !== workflowId) return undefined;
@@ -955,10 +1001,14 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => {
       const byId = new Map(s.workflows.map((w) => [w.id, w]));
       for (const w of dbWorkflows) {
-        const next = w.id === USER_STORY_WORKFLOW_ID
+        const merged = w.id === USER_STORY_WORKFLOW_ID
           ? mergeUserStoryWorkflow(w, SAMPLE_WORKFLOW)
           : w;
-        if (w.id === USER_STORY_WORKFLOW_ID && needsUserStoryUpgrade(w)) persistUpgrades.push(next);
+        const next = applyStudioDefaults(merged);
+        if (
+          (w.id === USER_STORY_WORKFLOW_ID && needsUserStoryUpgrade(w))
+          || next !== merged
+        ) persistUpgrades.push(next);
         byId.set(w.id, { ...next, edges: sanitizeWorkflowGraph(next.nodes ?? [], next.edges ?? []) });
       }
       return { workflows: Array.from(byId.values()) };
