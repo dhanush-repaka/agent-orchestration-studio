@@ -2,19 +2,31 @@
   command = "npm run build"
   publish = "dist"
 
+[build.environment]
+  NODE_VERSION = "20"
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
+
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
+# Do not mark @playwright/test as external. Copying playwright-core browsers
+# into the zip is what kept /.netlify/functions/playwright-execute from publishing.
 [functions.playwright-execute]
   timeout = 26
-  external_node_modules = ["@sparticuz/chromium", "playwright-core", "@playwright/test"]
+  external_node_modules = ["@sparticuz/chromium", "playwright-core"]
 
 [functions.playwright-locators]
   timeout = 26
-  external_node_modules = ["@sparticuz/chromium", "playwright-core", "@playwright/test"]
+  external_node_modules = ["@sparticuz/chromium", "playwright-core"]
 
 # Must stay above the SPA fallback so phones on qefoundry.com hit Chromium, not index.html.
+[[redirects]]
+  from = "/__studio/health"
+  to = "/.netlify/functions/health"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/__studio/playwright-execute"
   to = "/.netlify/functions/playwright-execute"

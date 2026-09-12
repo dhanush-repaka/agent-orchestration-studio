@@ -18,39 +18,64 @@ const LOCAL_SLUGS: Record<string, string> = {
   'playwright-locators': '/__studio/playwright-locators',
 };
 
+function studioPaths(slug: string): string[] {
+  const primary = LOCAL_SLUGS[slug];
+  if (!primary) return [];
+  const direct = `/.netlify/functions/${slug}`;
+  return primary === direct ? [primary] : [primary, direct];
+}
+
+function looksLikeJson(contentType: string, raw: string): boolean {
+  return contentType.includes('application/json') || raw.trim().startsWith('{') || raw.trim().startsWith('[');
+}
+
+function playwrightHtmlError(status: number): string {
+  if (status === 502 || status === 504 || status === 408) {
+    return 'Playwright runner timed out on the host. qefoundry.com functions stop at 26s; run the suite locally with npm run dev.';
+  }
+  if (status === 404) {
+    return 'Chromium function is missing from this Netlify deploy. /__studio/playwright-execute returned HTML, not JSON.';
+  }
+  return 'Playwright runner did not return JSON. /__studio/playwright-execute must reach the Netlify Chromium function.';
+}
+
 export async function callEdgeFunction<T = unknown>(
   slug: string,
   payload: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; data: T }> {
   const body = withLocalAdoSecrets(slug, payload);
-  const localPath = LOCAL_SLUGS[slug];
-  if (localPath) {
+  const paths = studioPaths(slug);
+  if (paths.length) {
+    let lastHtmlStatus = 0;
     try {
-      const localRes = await fetch(localPath, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const contentType = localRes.headers.get('content-type') || '';
-      const raw = await localRes.text();
-      const looksJson = contentType.includes('application/json') || raw.trim().startsWith('{') || raw.trim().startsWith('[');
-      if (slug.startsWith('playwright-') && !looksJson) {
-        const timedOut = localRes.status === 502 || localRes.status === 504 || localRes.status === 408 || localRes.status === 500;
+      for (const localPath of paths) {
+        const localRes = await fetch(localPath, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const contentType = localRes.headers.get('content-type') || '';
+        const raw = await localRes.text();
+        if (slug.startsWith('playwright-') && !looksLikeJson(contentType, raw)) {
+          lastHtmlStatus = localRes.status;
+          continue;
+        }
+        const localData = (looksLikeJson(contentType, raw) ? (() => { try { return JSON.parse(raw) as T; } catch { return {} as T; } })() : {} as T);
+        if (localRes.ok || slug.startsWith('playwright-')) {
+          return { ok: localRes.ok, status: localRes.status, data: localData };
+        }
+        if (slug.startsWith('ado-')) continue;
+      }
+      if (slug.startsWith('playwright-') && lastHtmlStatus) {
         return {
           ok: false,
-          status: localRes.status,
+          status: lastHtmlStatus,
           data: {
-            error: timedOut
-              ? 'Playwright runner timed out on the host. qefoundry.com functions stop at 26s; run the suite locally with npm run dev.'
-              : 'Playwright runner did not return JSON. Redeploy qefoundry.com so /__studio/playwright-execute reaches the Netlify Chromium function.',
+            error: playwrightHtmlError(lastHtmlStatus),
             source: 'unavailable',
             passed: false,
           } as T,
         };
-      }
-      const localData = (looksJson ? (() => { try { return JSON.parse(raw) as T; } catch { return {} as T; } })() : {} as T);
-      if (localRes.ok || slug.startsWith('playwright-')) {
-        return { ok: localRes.ok, status: localRes.status, data: localData };
       }
     } catch (err) {
       if (slug.startsWith('playwright-')) {

@@ -181,8 +181,8 @@ Local (`npm run dev`):
 Hosted (`qefoundry.com`):
 
 - Netlify functions with a **26 second** timeout
-- Uses `@sparticuz/chromium`
-- A full multi-test suite usually cannot finish on the hosted function. Run locally for real execution.
+- Uses `@sparticuz/chromium` and an in-process runner (no Playwright CLI zip)
+- A full multi-test suite often cannot finish on the hosted function. Remaining tests are skipped. Run locally for the full suite.
 
 Install browsers once:
 

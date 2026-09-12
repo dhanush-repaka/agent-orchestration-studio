@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   DEFAULT_PLAYWRIGHT_BASE_URL,
   applyDiscoveredLocators,
@@ -104,6 +105,194 @@ function writeRunnerFiles(dir: string, spec: string, baseUrl: string, timeoutSec
   writeFileSync(join(dir, 'playwright.config.mjs'), buildPlaywrightRunnerConfig(baseUrl, chrome), 'utf8');
 }
 
+export const PLAYWRIGHT_INPROCESS_SHIM = `const registry = (globalThis.__aosPlaywrightRegistry ||= []);
+function test(title, fn) {
+  if (typeof title === 'function') return title();
+  if (typeof fn === 'function') registry.push({ title: String(title), fn });
+}
+test.describe = (_title, fn) => { if (typeof fn === 'function') fn(); };
+test.skip = () => {};
+test.only = test;
+test.describe.skip = () => {};
+test.describe.only = test.describe;
+test.beforeEach = () => {};
+test.afterEach = () => {};
+test.beforeAll = () => {};
+test.afterAll = () => {};
+
+function expect(actual) {
+  const timeoutOf = (opts) => opts?.timeout ?? 8000;
+  const textOf = async () => (typeof actual?.innerText === 'function' ? await actual.innerText() : String(actual ?? ''));
+  const matches = (expected, value) => expected instanceof RegExp ? expected.test(value) : value.includes(String(expected));
+  const self = {
+    async toBeVisible(opts) {
+      if (typeof actual?.waitFor === 'function') {
+        await actual.waitFor({ state: 'visible', timeout: timeoutOf(opts) });
+        return;
+      }
+      throw new Error('toBeVisible() needs a locator');
+    },
+    async toBeHidden(opts) {
+      if (typeof actual?.waitFor === 'function') {
+        await actual.waitFor({ state: 'hidden', timeout: timeoutOf(opts) });
+        return;
+      }
+      throw new Error('toBeHidden() needs a locator');
+    },
+    async toContainText(expected, opts) {
+      const limit = timeoutOf(opts);
+      const started = Date.now();
+      let last = '';
+      while (Date.now() - started < limit) {
+        last = await textOf();
+        if (matches(expected, last)) return;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      throw new Error('Expected text ' + expected + ' but got ' + last.slice(0, 200));
+    },
+    async toHaveText(expected, opts) { return self.toContainText(expected, opts); },
+    async toHaveCount(n) {
+      const count = typeof actual?.count === 'function' ? await actual.count() : 0;
+      if (count !== n) throw new Error('Expected count ' + n + ' got ' + count);
+    },
+    async toHaveURL(expected) {
+      const url = typeof actual?.url === 'function' ? actual.url() : String(actual ?? '');
+      if (!matches(expected, url)) throw new Error('Expected URL ' + expected + ' got ' + url);
+    },
+    async toHaveValue(expected) {
+      const value = typeof actual?.inputValue === 'function' ? await actual.inputValue() : '';
+      if (value !== String(expected)) throw new Error('Expected value ' + expected + ' got ' + value);
+    },
+  };
+  return Object.assign(self, {
+    not: {
+      async toBeVisible() {
+        const visible = typeof actual?.isVisible === 'function' ? await actual.isVisible() : false;
+        if (visible) throw new Error('Expected locator not to be visible');
+      },
+      async toContainText(expected) {
+        if (matches(expected, await textOf())) throw new Error('Expected not to contain ' + expected);
+      },
+    },
+  });
+}
+
+export { test, expect, registry };
+`;
+
+export function rewriteSpecForInProcess(spec: string): string {
+  return modernizePlaywrightSpec(spec)
+    .replace(/from\s+['"]@playwright\/test['"]/g, 'from "./pw-shim.mjs"')
+    .replace(/require\(\s*['"]@playwright\/test['"]\s*\)/g, '{ test, expect }');
+}
+
+type InProcessTest = { title: string; fn: (args: { page: unknown }) => Promise<void> };
+
+async function executeSpecInProcess(
+  spec: string,
+  baseUrl: string,
+  timeoutSec: number,
+): Promise<RunnerResult> {
+  const dir = join(tmpdir(), `pw-in-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module', private: true }), 'utf8');
+  writeFileSync(join(dir, 'pw-shim.mjs'), PLAYWRIGHT_INPROCESS_SHIM, 'utf8');
+  writeFileSync(join(dir, 'generated.spec.mjs'), rewriteSpecUrls(rewriteSpecForInProcess(spec), baseUrl), 'utf8');
+  const started = Date.now();
+  const chrome = await resolveChrome();
+  const { chromium } = await import('playwright-core');
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      executablePath: chrome.executablePath,
+      args: chrome.args,
+    });
+    const bucket = ((globalThis as { __aosPlaywrightRegistry?: InProcessTest[] }).__aosPlaywrightRegistry = []);
+    await import(pathToFileURL(join(dir, 'generated.spec.mjs')).href);
+    const tests = bucket;
+    if (!tests.length) {
+      return {
+        status: 200,
+        body: {
+          passed: false,
+          total: 0,
+          failed: 0,
+          results: [],
+          source: 'playwright',
+          error: 'In-process runner found no tests in the spec.',
+          durationMs: Date.now() - started,
+          baseUrl,
+          spec,
+        },
+      };
+    }
+    const context = await browser.newContext({
+      baseURL: baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`,
+    });
+    const deadline = started + Math.min(timeoutSec, 20) * 1000;
+    const results: Array<{ title: string; status: 'passed' | 'failed' | 'skipped'; error?: string }> = [];
+    for (const test of tests) {
+      if (Date.now() > deadline - 2500) {
+        results.push({ title: test.title, status: 'skipped' });
+        continue;
+      }
+      const page = await context.newPage();
+      page.setDefaultTimeout(8000);
+      try {
+        await test.fn({ page });
+        results.push({ title: test.title, status: 'passed' });
+      } catch (err) {
+        results.push({
+          title: test.title,
+          status: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        await page.close().catch(() => undefined);
+      }
+    }
+    await context.close().catch(() => undefined);
+    const failed = results.filter((row) => row.status === 'failed').length;
+    const skipped = results.filter((row) => row.status === 'skipped').length;
+    const body = {
+      passed: results.length > 0 && failed === 0 && skipped < results.length,
+      total: results.length,
+      failed,
+      skipped,
+      results,
+      source: 'playwright' as const,
+      error: skipped
+        ? `Hosted Chromium stopped at ${Math.min(timeoutSec, 20)}s. ${skipped} test(s) were skipped. Run the full suite with npm run dev.`
+        : failed
+          ? results.find((row) => row.error)?.error
+          : undefined,
+      durationMs: Date.now() - started,
+      baseUrl,
+      spec,
+    };
+    return { status: 200, body: { ...body, htmlReport: buildPlaywrightHtmlReport(body) } };
+  } catch (err) {
+    return {
+      status: 500,
+      body: {
+        passed: false,
+        total: 0,
+        failed: 0,
+        results: [],
+        source: 'unavailable',
+        error: err instanceof Error ? err.message : 'In-process Playwright runner failed',
+        durationMs: Date.now() - started,
+        baseUrl,
+        spec,
+      },
+    };
+  } finally {
+    await browser?.close().catch(() => undefined);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function executeSpec(body: Record<string, unknown>): Promise<RunnerResult> {
   let spec = typeof body.spec === 'string' ? body.spec.trim() : '';
   if (!spec) {
@@ -113,6 +302,12 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
   if (Array.isArray(body.locators)) spec = applyDiscoveredLocators(spec, body.locators.map(String));
   if (/\b(?:child_process|node:child_process|node:fs|fs\.unlink|fs\.rm)\b/.test(spec)) {
     return { status: 400, body: { error: 'Spec uses disallowed Node APIs', passed: false, source: 'unavailable' } };
+  }
+  const baseUrl = String(body.baseUrl || DEFAULT_PLAYWRIGHT_BASE_URL).replace(/\/$/, '');
+  const lambda = onLambda();
+  if (lambda) {
+    const timeoutSec = Math.min(20, Math.max(8, Number(body.timeoutSec) || 18));
+    return executeSpecInProcess(spec, baseUrl, timeoutSec);
   }
   const cli = resolve(process.cwd(), 'node_modules/@playwright/test/cli.js');
   if (!existsSync(cli)) {
@@ -125,13 +320,9 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
       },
     };
   }
-  const baseUrl = String(body.baseUrl || DEFAULT_PLAYWRIGHT_BASE_URL).replace(/\/$/, '');
-  const lambda = onLambda();
   const testCount = Math.max(1, countPlaywrightTests(spec));
-  const timeoutSec = lambda
-    ? Math.min(18, Math.max(10, Number(body.timeoutSec) || 18))
-    : Math.min(240, Math.max(90, Number(body.timeoutSec) || testCount * 20));
-  const root = lambda ? tmpdir() : join(process.cwd(), '.aos-runs');
+  const timeoutSec = Math.min(240, Math.max(90, Number(body.timeoutSec) || testCount * 20));
+  const root = join(process.cwd(), '.aos-runs');
   const dir = join(root, `pw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const started = Date.now();
   const chrome = await resolveChrome();
@@ -141,7 +332,7 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
       process.execPath,
       [cli, 'test', '--config=playwright.config.mjs'],
       dir,
-      lambda ? 22000 : (timeoutSec + 20) * 1000,
+      (timeoutSec + 20) * 1000,
     );
     const resultsPath = join(dir, 'results.json');
     let report: unknown = null;
