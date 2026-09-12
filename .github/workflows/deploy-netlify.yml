@@ -1,0 +1,30 @@
+name: deploy-netlify
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - run: npm run build
+      - name: Deploy UI and functions to Netlify
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          if [ -z "$NETLIFY_AUTH_TOKEN" ] || [ -z "$NETLIFY_SITE_ID" ]; then
+            echo "Skipping Netlify deploy. Add NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID repository secrets so qefoundry.com publishes netlify/functions."
+            exit 0
+          fi
+          npx netlify-cli deploy --prod --dir=dist --functions=netlify/functions

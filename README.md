@@ -254,7 +254,14 @@ Coverage includes interpolation, the workflow engine, Playwright spec helpers, a
 ## Deploy
 
 - **UI:** Netlify build `npm run build`, publish `dist`. Redirects in `netlify.toml` send `/__studio/playwright-*` and `/__studio/ado-upload` to functions.
-- **Functions:** `netlify/functions/playwright-execute.ts`, `playwright-locators.ts`, `ado-upload.ts`.
+- **Functions:** `netlify/functions/playwright-execute.ts`, `playwright-locators.ts`, `ado-upload.ts`, `health.ts`.
 - **Supabase:** deploy Edge Functions (`agent-processor`, `ado-retrieval`, `ado-upload`, and the others under `supabase/functions/`). Keep `_shared/engine.ts` and `_shared/playwrightSpec.ts` in sync with `src/lib`.
+
+qefoundry.com currently publishes the Vite UI (Bolt / static Netlify). A Bolt publish does not include `netlify/functions`, so `/__studio/playwright-execute` returns HTML and Execute reports `source: unavailable`. To run Chromium on the hosted site:
+
+1. In the qefoundry.com Netlify site, link this GitHub repo and set Functions directory to `netlify/functions`, or
+2. Add GitHub secrets `NETLIFY_AUTH_TOKEN` and `NETLIFY_SITE_ID` so `.github/workflows/deploy-netlify.yml` can `netlify deploy --prod --dir=dist --functions=netlify/functions`.
+
+After a functions deploy, `GET /.netlify/functions/health` should return `{"ok":true,"service":"aos-functions"}` instead of `index.html`.
 
 Do not commit `.env`, `.ado-pat`, or any PAT.
