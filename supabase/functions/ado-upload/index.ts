@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { defaultAdoRepoName, linkWorkItemHyperlink, upsertAdoGitRepo, type AdoRepoFile } from "../_shared/adoGit.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -8,22 +9,30 @@ const corsHeaders = {
 };
 
 interface UploadRequest {
-  testCases: Array<{
+  testCases?: Array<{
     id?: string;
     title: string;
     description?: string;
-    preconditions?: string[];
+    preconditions?: string[] | string;
     requirementId?: string;
     priority?: string;
     type?: string;
     expectedOutcome?: string;
   }>;
+  attachments?: Array<{
+    fileName: string;
+    content: string;
+    comment?: string;
+  }>;
+  repoFiles?: AdoRepoFile[];
+  adoRepoName?: string;
   sourceWorkItemId?: number | string;
   adoOrg?: string;
   adoProject?: string;
   adoApiVersion?: string;
   adoWorkItemType?: string;
   adoTags?: string;
+  adoPat?: string;
   linkToSource?: boolean;
   priorityMap?: Record<string, number>;
 }
@@ -52,14 +61,22 @@ Deno.serve(async (req: Request) => {
   try {
     const body = (await req.json()) as UploadRequest;
 
-    if (!body || !Array.isArray(body.testCases) || body.testCases.length === 0) {
+    const testCases = Array.isArray(body?.testCases) ? body.testCases : [];
+    const attachments = Array.isArray(body?.attachments)
+      ? body.attachments.filter((file) => file?.fileName && file.content)
+      : [];
+    const repoFiles = Array.isArray(body?.repoFiles)
+      ? body.repoFiles.filter((file) => file?.path && file.content)
+      : [];
+
+    if (!testCases.length && !attachments.length && !repoFiles.length) {
       return new Response(
-        JSON.stringify({ error: "testCases (non-empty array) is required" }),
+        JSON.stringify({ error: "testCases, attachments, or repoFiles are required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const adoOrg = (body.adoOrg && String(body.adoOrg).trim()) || Deno.env.get("ADO_ORG");
+    const adoOrg = (body.adoOrg && String(body.adoOrg).trim()) || Deno.env.get("ADO_ORG") || "aiqenexus";
     const apiVersion = (body.adoApiVersion && String(body.adoApiVersion).trim()) || Deno.env.get("ADO_API_VERSION") || "7.0";
     const workItemType = body.adoWorkItemType || "Test Case";
     const tags = body.adoTags || "AI-Orchestration-Agent";
@@ -92,7 +109,8 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const adoPat = credRow?.value ?? "";
+    const incomingPat = typeof body.adoPat === "string" ? body.adoPat.trim() : "";
+    const adoPat = incomingPat || credRow?.value || Deno.env.get("ADO_PAT") || "";
 
     if (!adoPat) {
       return new Response(
@@ -118,8 +136,10 @@ Deno.serve(async (req: Request) => {
     // Discover the project name from the source work item if available.
     let projectName = (body.adoProject && String(body.adoProject).trim()) || "";
     let sourceWorkItemUrl = "";
+    let sourceTitle = "";
+    const existingLinks: string[] = [];
     if (body.sourceWorkItemId) {
-      const wiUrl = `https://dev.azure.com/${cleanOrg}/_apis/wit/workitems/${body.sourceWorkItemId}?api-version=${apiVersion}`;
+      const wiUrl = `https://dev.azure.com/${cleanOrg}/_apis/wit/workitems/${body.sourceWorkItemId}?$expand=relations&api-version=${apiVersion}`;
       const wiRes = await fetch(wiUrl, { headers: authHeaders });
       if (wiRes.ok) {
         const wiJson = await wiRes.json();
@@ -128,6 +148,10 @@ Deno.serve(async (req: Request) => {
           projectName = areaPath.split("\\")[0] ?? "";
         }
         sourceWorkItemUrl = wiJson.url ?? "";
+        sourceTitle = String(wiJson.fields?.["System.Title"] ?? "");
+        for (const rel of wiJson.relations ?? []) {
+          if (rel.url) existingLinks.push(rel.url);
+        }
       }
     }
 
@@ -141,7 +165,7 @@ Deno.serve(async (req: Request) => {
     const encodedProject = encodeURIComponent(projectName);
     const results: Array<{ title: string; success: boolean; workItemId?: number; url?: string; error?: string }> = [];
 
-    for (const tc of body.testCases) {
+    for (const tc of testCases) {
       const title = tc.title ?? "Untitled Test Case";
       const description = tc.description ?? "";
       const preconditionsRaw = tc.preconditions;
@@ -217,6 +241,99 @@ Deno.serve(async (req: Request) => {
 
     const succeeded = results.filter((r) => r.success).length;
     const failed = results.length - succeeded;
+    const uploadedAttachments: Array<{ fileName: string; success: boolean; url?: string; error?: string }> = [];
+
+    if (body.sourceWorkItemId && attachments.length) {
+      for (const file of attachments) {
+        try {
+          const attachRes = await fetch(
+            `https://dev.azure.com/${cleanOrg}/${encodedProject}/_apis/wit/attachments?fileName=${encodeURIComponent(file.fileName)}&api-version=${apiVersion}`,
+            {
+              method: "POST",
+              headers: {
+                ...authHeaders,
+                "Content-Type": "application/octet-stream",
+              },
+              body: file.content,
+            },
+          );
+          if (!attachRes.ok) {
+            uploadedAttachments.push({
+              fileName: file.fileName,
+              success: false,
+              error: `upload failed (${attachRes.status}): ${await attachRes.text()}`,
+            });
+            continue;
+          }
+          const uploaded = await attachRes.json();
+          const patchRes = await fetch(
+            `https://dev.azure.com/${cleanOrg}/_apis/wit/workitems/${body.sourceWorkItemId}?api-version=${apiVersion}`,
+            {
+              method: "PATCH",
+              headers: {
+                ...authHeaders,
+                "Content-Type": "application/json-patch+json",
+              },
+              body: JSON.stringify([{
+                op: "add",
+                path: "/relations/-",
+                value: {
+                  rel: "AttachedFile",
+                  url: uploaded.url,
+                  attributes: { comment: file.comment || file.fileName },
+                },
+              }]),
+            },
+          );
+          if (!patchRes.ok) {
+            uploadedAttachments.push({
+              fileName: file.fileName,
+              success: false,
+              error: `link failed (${patchRes.status}): ${await patchRes.text()}`,
+            });
+            continue;
+          }
+          uploadedAttachments.push({ fileName: file.fileName, success: true, url: uploaded.url });
+        } catch (err) {
+          uploadedAttachments.push({
+            fileName: file.fileName,
+            success: false,
+            error: err instanceof Error ? err.message : "Network error",
+          });
+        }
+      }
+    }
+
+    let repository: Record<string, unknown> | null = null;
+    if (repoFiles.length) {
+      const repoName = (body.adoRepoName && String(body.adoRepoName).trim())
+        || defaultAdoRepoName(body.sourceWorkItemId, sourceTitle);
+      const published = await upsertAdoGitRepo({
+        org: cleanOrg,
+        project: projectName,
+        apiVersion,
+        headers: authHeaders,
+        repoName,
+        files: repoFiles,
+        commitMessage: body.sourceWorkItemId
+          ? `Add generated Playwright spec for work item ${body.sourceWorkItemId}`
+          : "Add generated Playwright spec",
+      });
+      if (published.success && published.webUrl && body.sourceWorkItemId) {
+        const linked = await linkWorkItemHyperlink({
+          org: cleanOrg,
+          apiVersion,
+          headers: authHeaders,
+          workItemId: body.sourceWorkItemId,
+          url: published.webUrl,
+          comment: "Generated Playwright repository",
+          existingUrls: existingLinks,
+        });
+        repository = { ...published, workItemLinked: linked.success, linkError: linked.error };
+      } else {
+        repository = published;
+      }
+    }
 
     return new Response(
       JSON.stringify({
@@ -226,6 +343,9 @@ Deno.serve(async (req: Request) => {
         succeeded,
         failed,
         results,
+        attachments: uploadedAttachments,
+        attached: uploadedAttachments.filter((a) => a.success).length,
+        repository,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );

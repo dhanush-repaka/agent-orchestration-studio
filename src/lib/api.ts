@@ -13,6 +13,7 @@ function withLocalAdoSecrets(slug: string, payload: Record<string, unknown>): Re
 
 const LOCAL_SLUGS: Record<string, string> = {
   'ado-retrieval': '/__studio/ado-retrieval',
+  'ado-upload': '/__studio/ado-upload',
   'playwright-execute': '/__studio/playwright-execute',
   'playwright-locators': '/__studio/playwright-locators',
 };
@@ -22,7 +23,7 @@ export async function callEdgeFunction<T = unknown>(
   payload: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; data: T }> {
   const body = withLocalAdoSecrets(slug, payload);
-  const localPath = import.meta.env.DEV ? LOCAL_SLUGS[slug] : undefined;
+  const localPath = LOCAL_SLUGS[slug];
   if (localPath) {
     try {
       const localRes = await fetch(localPath, {
@@ -39,11 +40,27 @@ export async function callEdgeFunction<T = unknown>(
         return {
           ok: false,
           status: 0,
-          data: { error: err instanceof Error ? err.message : 'Playwright runner is not available' } as T,
+          data: {
+            error: 'Playwright runner is not reachable from this host.',
+            source: 'unavailable',
+            passed: false,
+            cause: err instanceof Error ? err.message : 'Network error',
+          } as T,
         };
       }
       // Fall through to the deployed function for ADO.
     }
+  }
+  if (slug.startsWith('playwright-')) {
+    return {
+      ok: false,
+      status: 404,
+      data: {
+        error: 'Playwright runner is not deployed. Redeploy qefoundry.com so /__studio/playwright-execute reaches the Netlify Chromium function.',
+        source: 'unavailable',
+        passed: false,
+      } as T,
+    };
   }
   const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${slug}`;
   try {

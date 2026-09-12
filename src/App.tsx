@@ -3,6 +3,7 @@ import { useStore } from '@/store';
 import { pageFromPath } from '@/lib/routes';
 import { Layout } from '@/components/Layout';
 import { ToastContainer } from '@/components/Toast';
+import { LoginPage } from '@/pages/LoginPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { AgentLibraryPage } from '@/pages/AgentLibraryPage';
 import { AgentConfigPage } from '@/pages/AgentConfigPage';
@@ -17,6 +18,8 @@ import {
 function App() {
   const page = useStore((s) => s.page);
   const theme = useStore((s) => s.theme);
+  const authStatus = useStore((s) => s.authStatus);
+  const hydrateAuth = useStore((s) => s.hydrateAuth);
   const hydrateAgents = useStore((s) => s.hydrateAgents);
   const hydrateWorkflows = useStore((s) => s.hydrateWorkflows);
   const hydrateRuns = useStore((s) => s.hydrateRuns);
@@ -29,13 +32,19 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
+    void hydrateAuth();
+  }, [hydrateAuth]);
+
+  useEffect(() => {
+    if (authStatus !== 'signed-in') return;
     hydrateAgents();
     hydrateWorkflows();
     hydrateRuns();
     hydrateCatalogs();
-  }, [hydrateAgents, hydrateWorkflows, hydrateRuns, hydrateCatalogs]);
+  }, [authStatus, hydrateAgents, hydrateWorkflows, hydrateRuns, hydrateCatalogs]);
 
   useEffect(() => {
+    if (authStatus !== 'signed-in') return;
     void drainTriggers();
     const drainId = window.setInterval(() => { void drainTriggers(); }, 5000);
     const tickId = window.setInterval(() => { tickSchedules(); }, 30000);
@@ -49,7 +58,7 @@ function App() {
       window.clearInterval(tickId);
       window.clearInterval(hydrateId);
     };
-  }, [drainTriggers, tickSchedules]);
+  }, [authStatus, drainTriggers, tickSchedules]);
 
   useEffect(() => {
     const initial = pageFromPath(window.location.pathname);
@@ -83,6 +92,23 @@ function App() {
       default: return <DashboardPage />;
     }
   };
+
+  if (authStatus === 'loading') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 text-sm text-slate-500">
+        Checking session…
+      </div>
+    );
+  }
+
+  if (authStatus !== 'signed-in') {
+    return (
+      <>
+        <LoginPage />
+        <ToastContainer />
+      </>
+    );
+  }
 
   return (
     <Layout>

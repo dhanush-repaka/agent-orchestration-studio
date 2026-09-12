@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Bot, Workflow, PlayCircle, Plug, MessageSquareText,
   BookOpen, Cpu, KeyRound, ClipboardCheck, Activity, ScrollText, Settings,
   PanelLeftClose, PanelLeftOpen, Search, Bell, HelpCircle, Sun, Moon,
-  ChevronDown, Sparkles, Menu,
+  ChevronDown, Sparkles, Menu, LogOut,
 } from 'lucide-react';
 import type { Environment } from '@/types';
 
@@ -66,6 +66,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const setEnvironment = useStore((s) => s.setEnvironment);
   const workspaceName = useStore((s) => s.workspaceName);
   const currentUser = useStore((s) => s.currentUser);
+  const signOut = useStore((s) => s.signOut);
   const runs = useStore((s) => s.runs);
   const agents = useStore((s) => s.agents);
   const workflows = useStore((s) => s.workflows);
@@ -238,12 +239,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </button>
           <div className="flex items-center gap-2 ml-1 pl-2 border-l border-slate-200 dark:border-slate-700">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white text-xs font-bold">
-              {currentUser.name.split(' ').map((n) => n[0]).join('')}
+              {currentUser.name.split(/\s+/).filter(Boolean).slice(0, 2).map((n) => n[0]?.toUpperCase()).join('') || '?'}
             </div>
             <div className="hidden lg:block">
               <p className="text-xs font-semibold text-slate-900 dark:text-white leading-tight">{currentUser.name}</p>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{currentUser.role}</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{currentUser.email || currentUser.role}</p>
             </div>
+            <button
+              onClick={() => { void signOut(); }}
+              className="btn-ghost p-2"
+              aria-label="Sign out"
+              title="Sign out"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </header>

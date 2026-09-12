@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PLAYWRIGHT_BASE_URL,
+  PARABANK_REGISTRATION_TEST_CASES,
+  buildParabankSuiteFromCases,
+  buildPlaywrightHtmlReport,
+  countPlaywrightTests,
+  ensureParabankCoverage,
   extractPlaywrightSpec,
   findLatestPlaywrightExecute,
   flattenPlaywrightJsonReport,
@@ -27,6 +32,32 @@ describe('playwrightSpec', () => {
       'Playwright Automation': spec,
     })).toContain('register');
     expect(extractPlaywrightSpec(JSON.stringify({ locators: ['page.locator("body")'], spec }), {})).toContain('register');
+  });
+
+  it('replaces placeholder login with one passing test per generated case', () => {
+    const generated = `import { test } from "@playwright/test";
+test("login", async ({ page }) => {
+  await page.goto("https://parabank.parasoft.com/parabank");
+  await page.fill('input[name="username"]', 'validUser');
+});`;
+    const next = ensureParabankCoverage(generated, {
+      title: 'Parabank Registration',
+      testCases: PARABANK_REGISTRATION_TEST_CASES,
+    });
+    expect(next).not.toContain('validUser');
+    expect(next).toContain('register.htm');
+    expect(next).toContain('customer.firstName');
+    expect(countPlaywrightTests(next)).toBe(9);
+    for (const tc of PARABANK_REGISTRATION_TEST_CASES) {
+      expect(next).toContain(tc.title);
+    }
+  });
+
+  it('builds a 9-test suite from generated test cases', () => {
+    const spec = buildParabankSuiteFromCases([...PARABANK_REGISTRATION_TEST_CASES]);
+    expect(countPlaywrightTests(spec)).toBe(9);
+    expect(spec).toContain('already exists');
+    expect(spec).toContain('first name is required');
   });
 
   it('keeps Parabank app paths under /parabank', () => {
@@ -61,5 +92,19 @@ describe('playwrightSpec', () => {
       n9: '{"score":8}',
       n10: JSON.stringify({ passed: false, results: [{ title: 'a', status: 'failed' }], source: 'playwright' }),
     })?.passed).toBe(false);
+  });
+
+  it('renders a self-contained HTML report', () => {
+    const html = buildPlaywrightHtmlReport({
+      passed: true,
+      total: 1,
+      failed: 0,
+      results: [{ title: 'registers a new customer', status: 'passed' }],
+      source: 'playwright',
+      baseUrl: DEFAULT_PLAYWRIGHT_BASE_URL,
+    });
+    expect(html).toContain('<!DOCTYPE html>');
+    expect(html).toContain('registers a new customer');
+    expect(html).toContain('passed');
   });
 });

@@ -238,6 +238,77 @@ describe('user story workflow', () => {
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n2')?.status).toBe('completed');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"passed": true');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"source": "playwright"');
+    expect(ids).toContain('n15');
+  });
+
+  it('executes all 9 generated test cases and finishes at End', async () => {
+    const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
+    const { PARABANK_REGISTRATION_TEST_CASES, countPlaywrightTests } = await import('@/lib/playwrightSpec');
+    const invoke: InvokeFn = async (slug, payload) => {
+      if (slug === 'ado-retrieval' || slug === 'ado-upload') {
+        return { ok: false, status: 500, data: { error: 'offline' } as never };
+      }
+      if (slug === 'playwright-execute') {
+        const spec = String((payload as { spec?: string }).spec ?? '');
+        expect(countPlaywrightTests(spec)).toBe(9);
+        for (const tc of PARABANK_REGISTRATION_TEST_CASES) {
+          expect(spec).toContain(tc.title);
+        }
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            passed: true,
+            total: 9,
+            failed: 0,
+            results: PARABANK_REGISTRATION_TEST_CASES.map((tc) => ({ title: tc.title, status: 'passed' })),
+            source: 'playwright',
+          } as never,
+        };
+      }
+      if (slug === 'playwright-locators') {
+        return { ok: true, status: 200, data: { locators: ['page.locator("[name=\\"customer.username\\"]")'], source: 'playwright' } as never };
+      }
+      const type = String((payload as { agentType?: string }).agentType ?? '');
+      const result = type === 'Playwright Automation'
+        ? 'import { test } from "@playwright/test";\ntest("login", async ({ page }) => { await page.fill("input[name=username]", "validUser"); });'
+        : type === 'Report Generator'
+          ? '# Report\nAll 9 passed'
+          : type === 'Test Case Generator'
+            ? { testCases: PARABANK_REGISTRATION_TEST_CASES }
+            : type === 'Test Data Generator'
+              ? { datasets: PARABANK_REGISTRATION_TEST_CASES.map((tc) => ({ scenarioId: tc.id, data: { username: 'ada' } })) }
+              : type === 'Code Review'
+                ? { score: 8, issues: [] }
+                : type === 'Defect Analysis'
+                  ? { defectTitle: 'none', severity: 'low', steps: [], passed: true }
+                  : type === 'Requirement Analysis'
+                    ? { workItemId: '21', title: 'Parabank Registration', qualityScore: 82, acceptanceCriteria: ['valid details'], businessObjective: 'Sign up' }
+                    : { ok: true };
+      return { ok: true, status: 200, data: { result, llmUsage: { total_tokens: 12 } } as never };
+    };
+
+    const run = await executeWorkflow({
+      workflow: SAMPLE_WORKFLOW,
+      agents: AGENTS,
+      runtimeInput: '{"workItemId":21}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: {
+        isCancelled: () => false,
+        onNodeStatus: () => {},
+        waitForApproval: async () => true,
+      },
+    });
+
+    expect(run.status).toBe('completed');
+    expect(run.nodeExecutions.map((n) => n.nodeId)).toEqual(expect.arrayContaining(['n5', 'n10', 'n14', 'n15']));
+    expect(run.nodeExecutions.map((n) => n.nodeId)).not.toContain('n17');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"total": 9');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"failed": 0');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"passed": true');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n15')?.status).toBe('completed');
   });
 
   it('sends failing Playwright results to healing instead of inventing a pass', async () => {
@@ -301,5 +372,101 @@ describe('user story workflow', () => {
     expect(ids).toContain('n18');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"passed": false');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n12')?.output).toContain('Healed after a real failure');
+  });
+
+    it('uploads test cases, attaches reports, and sends the spec to an ADO repo', async () => {
+    const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
+    const uploads: Record<string, unknown>[] = [];
+    const invoke: InvokeFn = async (slug, payload) => {
+      if (slug === 'ado-retrieval') {
+        return { ok: false, status: 500, data: { error: 'offline' } as never };
+      }
+      if (slug === 'ado-upload') {
+        uploads.push(payload as Record<string, unknown>);
+        const cases = Array.isArray(payload.testCases) ? payload.testCases : [];
+        const files = Array.isArray(payload.attachments) ? payload.attachments as { fileName: string }[] : [];
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            succeeded: cases.length,
+            failed: 0,
+            results: cases.map((tc, i) => ({ title: (tc as { title?: string }).title, success: true, workItemId: 100 + i })),
+            attachments: files.map((file) => ({ fileName: file.fileName, success: true })),
+            attached: files.length,
+          } as never,
+        };
+      }
+      if (slug === 'playwright-execute') {
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            passed: true,
+            total: 1,
+            failed: 0,
+            results: [{ title: 'register', status: 'passed' }],
+            source: 'playwright',
+          } as never,
+        };
+      }
+      if (slug === 'playwright-locators') {
+        return { ok: true, status: 200, data: { locators: ['page.getByLabel("Username")'], source: 'playwright' } as never };
+      }
+      const type = String((payload as { agentType?: string }).agentType ?? '');
+      const result = type === 'Playwright Automation'
+        ? 'import { test } from "@playwright/test";\ntest("register", async ({ page }) => { await page.getByLabel("Username").fill("ada"); });'
+        : type === 'Report Generator'
+          ? '# Report\nAll good'
+          : type === 'Test Case Generator'
+            ? { testCases: [{ id: 'TC-001', title: 'Register', type: 'functional', priority: 'high', expectedOutcome: 'created' }] }
+            : type === 'Test Data Generator'
+              ? { datasets: [{ scenarioId: 'TC-001', data: { username: 'ada' } }] }
+              : type === 'Code Review'
+                ? { score: 8, issues: [] }
+                : type === 'Defect Analysis'
+                  ? { defectTitle: 'none', severity: 'low', steps: [], passed: true }
+                  : type === 'Requirement Analysis'
+                    ? { workItemId: '21', title: 'Registration', qualityScore: 82, acceptanceCriteria: ['valid details'], businessObjective: 'Sign up' }
+                    : { ok: true };
+      return { ok: true, status: 200, data: { result, llmUsage: { total_tokens: 12 } } as never };
+    };
+
+    const run = await executeWorkflow({
+      workflow: SAMPLE_WORKFLOW,
+      agents: AGENTS,
+      runtimeInput: '{"workItemId":21}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: {
+        isCancelled: () => false,
+        onNodeStatus: () => {},
+        waitForApproval: async () => true,
+      },
+    });
+
+    expect(run.status).toBe('completed');
+    expect(uploads.length).toBeGreaterThanOrEqual(2);
+    const first = uploads[0];
+    const last = uploads[uploads.length - 1];
+    const firstFiles = (first.attachments as { fileName: string }[]).map((f) => f.fileName);
+    const lastFiles = (last.attachments as { fileName: string }[]).map((f) => f.fileName);
+    const lastRepo = (last.repoFiles as { path: string; content: string }[]).map((f) => f.path);
+    expect(first.testCases).toEqual(expect.arrayContaining([expect.objectContaining({ title: 'Register' })]));
+    expect(firstFiles).toContain('test-cases.json');
+    expect(last.testCases).toEqual([]);
+    expect(lastFiles).toEqual(expect.arrayContaining([
+      'playwright-report.html',
+      'test-cases.json',
+      'qe-report.md',
+    ]));
+    expect(lastFiles).not.toContain('generated.spec.ts');
+    expect(lastRepo).toEqual(expect.arrayContaining(['generated.spec.ts', 'README.md']));
+    expect(last.adoRepoName).toMatch(/wi-21/);
+    expect((last.attachments as { fileName: string; content: string }[]).find((f) => f.fileName === 'playwright-report.html')?.content)
+      .toContain('Playwright execution report');
+    expect((last.repoFiles as { path: string; content: string }[]).find((f) => f.path === 'generated.spec.ts')?.content)
+      .toContain('@playwright/test');
   });
 });

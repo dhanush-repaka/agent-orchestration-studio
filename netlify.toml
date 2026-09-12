@@ -1,0 +1,39 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+[functions.playwright-execute]
+  timeout = 26
+  external_node_modules = ["@sparticuz/chromium", "playwright-core", "@playwright/test"]
+
+[functions.playwright-locators]
+  timeout = 26
+  external_node_modules = ["@sparticuz/chromium", "playwright-core", "@playwright/test"]
+
+# Must stay above the SPA fallback so phones on qefoundry.com hit Chromium, not index.html.
+[[redirects]]
+  from = "/__studio/playwright-execute"
+  to = "/.netlify/functions/playwright-execute"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/__studio/playwright-locators"
+  to = "/.netlify/functions/playwright-locators"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/__studio/ado-upload"
+  to = "/.netlify/functions/ado-upload"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

@@ -16,10 +16,13 @@ export const PAGE_PATH = {
   settings: '/settings',
 } as const;
 
+export const LOGIN_PATH = '/login';
+
 export type PathPage = keyof typeof PAGE_PATH;
 
 export function pageFromPath(pathname: string): PathPage {
   const cleaned = pathname.replace(/\/$/, '') || '/';
+  if (cleaned === LOGIN_PATH) return 'dashboard';
   const match = (Object.entries(PAGE_PATH) as [PathPage, string][]).find(([, path]) => path === cleaned);
   return match?.[0] ?? 'dashboard';
 }

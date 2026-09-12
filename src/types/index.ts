@@ -249,6 +249,7 @@ export interface NodeRuntimeConfig {
   approver?: string;
   adoOrg?: string;
   adoProject?: string;
+  adoRepoName?: string;
   adoApiVersion?: string;
   adoWorkItemType?: string;
   adoTags?: string;

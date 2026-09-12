@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
+import { publishToAzureDevOps, type AdoAttachment, type AdoRepoFile, type AdoTestCase } from './server/ado-upload';
 
 const DEFAULT_ORG = 'aiqenexus';
 
@@ -33,13 +34,38 @@ export function adoDevProxy(): Plugin {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const path = req.url?.split('?')[0];
-        if (req.method !== 'POST' || path !== '/__studio/ado-retrieval') {
+        if (req.method !== 'POST' || (path !== '/__studio/ado-retrieval' && path !== '/__studio/ado-upload')) {
           next();
           return;
         }
         try {
           const raw = await readBody(req);
           const body = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+          const adoPat = readPat(typeof body.adoPat === 'string' ? body.adoPat : undefined);
+
+          if (path === '/__studio/ado-upload') {
+            if (!adoPat) {
+              json(res, 500, { error: 'Azure DevOps PAT is not configured for local upload' });
+              return;
+            }
+            const result = await publishToAzureDevOps({
+              testCases: Array.isArray(body.testCases) ? body.testCases as AdoTestCase[] : [],
+              attachments: Array.isArray(body.attachments) ? body.attachments as AdoAttachment[] : [],
+              repoFiles: Array.isArray(body.repoFiles) ? body.repoFiles as AdoRepoFile[] : [],
+              adoRepoName: typeof body.adoRepoName === 'string' ? body.adoRepoName : undefined,
+              sourceWorkItemId: body.sourceWorkItemId as number | string | undefined,
+              adoOrg: typeof body.adoOrg === 'string' ? body.adoOrg : DEFAULT_ORG,
+              adoProject: typeof body.adoProject === 'string' ? body.adoProject : undefined,
+              adoApiVersion: typeof body.adoApiVersion === 'string' ? body.adoApiVersion : undefined,
+              adoWorkItemType: typeof body.adoWorkItemType === 'string' ? body.adoWorkItemType : undefined,
+              adoTags: typeof body.adoTags === 'string' ? body.adoTags : undefined,
+              adoPat,
+              linkToSource: body.linkToSource !== false,
+            });
+            json(res, result.status, result.body);
+            return;
+          }
+
           const workItemId = body.workItemId;
           const parsedId = typeof workItemId === 'number' ? workItemId : Number(workItemId);
           if (!workItemId || Number.isNaN(parsedId)) {
@@ -48,7 +74,6 @@ export function adoDevProxy(): Plugin {
           }
           const adoOrg = String(body.adoOrg || DEFAULT_ORG).trim();
           const apiVersion = String(body.adoApiVersion || '7.0').trim();
-          const adoPat = readPat(typeof body.adoPat === 'string' ? body.adoPat : undefined);
           if (!adoPat) {
             json(res, 500, { error: 'Azure DevOps PAT is not configured for local retrieval' });
             return;

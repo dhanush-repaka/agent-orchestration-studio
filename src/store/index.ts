@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { executeWorkflow, type ReplayResume } from '@/lib/engine';
 import type {
-  Agent, Workflow, WorkflowRun, Environment, NodeStatus, RunStatus,
+  Agent, Workflow, WorkflowRun, Environment, NodeStatus, User,
   WorkflowNode, WorkflowEdge, Prompt, Credential, Integration,
   Evaluation, KnowledgeConnection, AuditLog, PendingApproval,
 } from '@/types';
@@ -23,6 +23,7 @@ import { loadCatalogs, saveCatalogs, type CatalogSnapshot } from '@/lib/catalog'
 import { isScheduleDue } from '@/lib/cron';
 import { callEdgeFunction } from '@/lib/api';
 import { applyStudioDefaults, mergeUserStoryWorkflow, needsUserStoryUpgrade, USER_STORY_WORKFLOW_ID } from '@/lib/workflowSetup';
+import { authErrorMessage, userFromAuth } from '@/lib/auth';
 
 async function persistRun(run: WorkflowRun) {
   const { error } = await supabase
@@ -158,7 +159,12 @@ interface AppState {
   knowledgeConnections: KnowledgeConnection[];
   auditLogs: AuditLog[];
   users: typeof USERS;
-  currentUser: typeof CURRENT_USER;
+  currentUser: User;
+  authStatus: 'loading' | 'signed-out' | 'signed-in';
+  hydrateAuth: () => Promise<void>;
+  signIn: (email: string, password: string) => Promise<{ ok: boolean; error: string }>;
+  signUp: (email: string, password: string, name?: string) => Promise<{ ok: boolean; error: string; needsConfirm?: boolean }>;
+  signOut: () => Promise<void>;
 
   // selection
   selectedAgentId: string | null;
@@ -232,14 +238,6 @@ interface AppState {
 let toastId = 0;
 let runGeneration = 0;
 let approvalWait: { resolve: (ok: boolean) => void } | null = null;
-
-function isTerminalRun(status: RunStatus) {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function catalogSnapshot(s: {
   prompts: CatalogSnapshot['prompts'];
@@ -341,6 +339,47 @@ export const useStore = create<AppState>((set, get) => ({
   auditLogs: AUDIT_LOGS,
   users: USERS,
   currentUser: CURRENT_USER,
+  authStatus: 'loading',
+  hydrateAuth: async () => {
+    const apply = (sessionUser: Parameters<typeof userFromAuth>[0] | null) => {
+      if (sessionUser) {
+        set({ authStatus: 'signed-in', currentUser: userFromAuth(sessionUser) });
+        return;
+      }
+      set({ authStatus: 'signed-out' });
+    };
+    try {
+      const { data } = await supabase.auth.getSession();
+      apply(data.session?.user ?? null);
+      supabase.auth.onAuthStateChange((_event, session) => {
+        apply(session?.user ?? null);
+      });
+    } catch (err) {
+      logStoreError('hydrateAuth', err);
+      set({ authStatus: 'signed-out' });
+    }
+  },
+  signIn: async (email, password) => {
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) return { ok: false, error: authErrorMessage(error) };
+    return { ok: true, error: '' };
+  },
+  signUp: async (email, password, name) => {
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: { data: { full_name: name?.trim() || undefined } },
+    });
+    if (error) return { ok: false, error: authErrorMessage(error) };
+    if (data.user && !data.session) {
+      return { ok: true, error: '', needsConfirm: true };
+    }
+    return { ok: true, error: '' };
+  },
+  signOut: async () => {
+    await supabase.auth.signOut();
+    set({ authStatus: 'signed-out', currentUser: CURRENT_USER });
+  },
 
   selectedAgentId: null,
   selectedWorkflowId: 'w1',
@@ -801,76 +840,14 @@ export const useStore = create<AppState>((set, get) => ({
     });
 
     void (async () => {
-      // Local engine owns the Run button: it can wait for approval and call the
-      // Vite Playwright / ADO proxies. The deployed execute-workflow function
-      // cannot launch a browser.
-      if (import.meta.env.DEV) {
-        try {
-          finish(await runLocal());
-        } catch (err) {
-          if (gen !== runGeneration) return;
-          set({ runningWorkflowId: null, serverRunId: null, pendingApproval: null });
-          get().addToast(err instanceof Error ? err.message : 'Workflow failed', 'error');
-        }
-        return;
-      }
-
-      const { ok, status, data } = await callEdgeFunction<WorkflowRun & { error?: string }>(
-        'execute-workflow',
-        {
-          runId,
-          workflow: wf,
-          agents: get().agents,
-          runtimeInput: runtimeInput ?? wf.defaultInput ?? '{}',
-          triggeredBy,
-          resume: resume ?? null,
-        },
-      );
-      if (gen !== runGeneration) return;
-
-      if (!ok && (status === 0 || status === 404)) {
-        try {
-          finish(await runLocal());
-        } catch (err) {
-          if (gen !== runGeneration) return;
-          set({ runningWorkflowId: null, serverRunId: null, pendingApproval: null });
-          get().addToast(err instanceof Error ? err.message : 'Workflow failed', 'error');
-        }
-        return;
-      }
-
-      if (!ok) {
-        set({ runningWorkflowId: null, serverRunId: null, pendingApproval: null });
-        get().addToast(typeof data?.error === 'string' ? data.error : 'Failed to start run', 'error');
-        return;
-      }
-
-      if (data?.nodeExecutions && data.status && isTerminalRun(data.status)) {
-        finish(data);
-        return;
-      }
-
-      for (let i = 0; i < 180; i++) {
+      // Always run in the browser. The deployed execute-workflow function cannot
+      // launch Chromium, so Playwright nodes 404 there with NOT_FOUND.
+      try {
+        finish(await runLocal());
+      } catch (err) {
         if (gen !== runGeneration) return;
-        await sleep(2000);
-        await get().hydrateRuns();
-        const run = get().runs.find((r) => r.id === runId);
-        if (!run) continue;
-        const maps = mapsFromRun(run);
-        const pending = run.status === 'waiting-approval'
-          ? pendingFromRun(run, wf) ?? get().pendingApproval
-          : null;
-        set((s) => ({
-          runStatus: { ...s.runStatus, ...maps.runStatus },
-          runOutputs: { ...s.runOutputs, ...maps.runOutputs },
-          runErrors: { ...s.runErrors, ...maps.runErrors },
-          pendingApproval: pending,
-        }));
-        if (run.status === 'waiting-approval') continue;
-        if (isTerminalRun(run.status)) {
-          finish(run);
-          return;
-        }
+        set({ runningWorkflowId: null, serverRunId: null, pendingApproval: null });
+        get().addToast(err instanceof Error ? err.message : 'Workflow failed', 'error');
       }
     })();
   },

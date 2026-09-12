@@ -14,6 +14,9 @@
     "playwright:install": "PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium"
   },
   "dependencies": {
+    "@playwright/test": "^1.63.0",
+    "@sparticuz/chromium": "^143.0.4",
+    "playwright-core": "^1.63.0",
     "@supabase/supabase-js": "^2.57.4",
     "@xyflow/react": "^12.11.2",
     "lucide-react": "^0.344.0",
@@ -23,7 +26,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
-    "@playwright/test": "^1.63.0",
+    "@netlify/functions": "^5.1.2",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",

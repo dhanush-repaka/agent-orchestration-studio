@@ -3,7 +3,11 @@ import type {
   LogEntry, NodeStatus, NodeRuntimeConfig, InputBinding, RunStatus,
 } from '../types';
 import { evaluateCondition, getByPath, interpolate, parseJson, type InterpContext } from './interpolate';
+import { collectAdoAttachments, collectAdoRepoFiles } from './adoArtifacts';
+import { defaultAdoRepoName } from './adoGit';
 import {
+  buildPlaywrightHtmlReport,
+  ensureParabankCoverage,
   extractLocators,
   extractPlaywrightSpec,
   findLatestPlaywrightExecute,
@@ -203,6 +207,15 @@ function extractAdoWorkItem(upstream: Record<string, unknown>, workflowInput: un
   return null;
 }
 
+function alreadyUploadedTestCases(upstream: Record<string, unknown>): boolean {
+  for (const value of Object.values(upstream)) {
+    if (!value || typeof value !== 'object') continue;
+    const rec = value as Record<string, unknown>;
+    if (Number(rec.succeeded) > 0 && Array.isArray(rec.results)) return true;
+  }
+  return false;
+}
+
 function extractTestCases(upstream: Record<string, unknown>): unknown[] | null {
   const visit = (value: unknown): unknown[] | null => {
     if (!value) return null;
@@ -313,9 +326,11 @@ async function runAgentNode(
     }
     const ado = extractAdoWorkItem(upstream, workflowInput);
     const sourceWorkItemId = ado?.id ?? resolveWorkItemId(cfg, workflowInput, upstream);
-    log('info', 'tool', `Uploading ${testCases.length} work item(s) to Azure DevOps`);
+    const attachments = collectAdoAttachments({ testCases });
+    log('info', 'tool', `Uploading ${testCases.length} test case(s) and ${attachments.length} attachment(s) to Azure DevOps`);
     const { ok, data } = await invoke<Record<string, unknown>>('ado-upload', {
       testCases,
+      attachments,
       sourceWorkItemId,
       adoOrg: cfg.adoOrg || undefined,
       adoProject: cfg.adoProject || undefined,
@@ -584,7 +599,10 @@ export async function executeWorkflow(opts: {
               ? 'execute'
               : 'locators');
           const upstream = collectUpstream(currentId, wf, nodeOutputs, nodes, agentMap);
-          const spec = extractPlaywrightSpec(predOut, { ...upstream, previous: parseMaybeJson(predOut) });
+          const spec = ensureParabankCoverage(
+            extractPlaywrightSpec(predOut, { ...upstream, previous: parseMaybeJson(predOut) }),
+            { workflowInput, upstream },
+          );
           const baseUrl = resolvePlaywrightBaseUrl(cfg, workflowInput);
           if (action === 'execute') {
             if (!spec) {
@@ -601,16 +619,26 @@ export async function executeWorkflow(opts: {
               baseUrl,
               timeoutSec: cfg.timeoutSec,
             });
-            const err = typeof data.error === 'string' ? data.error : undefined;
-            if (!ok && data.source === 'unavailable') {
+            const unavailable = data.source === 'unavailable'
+              || data.code === 'NOT_FOUND'
+              || String(data.message ?? '').includes('Requested function was not found');
+            const err = typeof data.error === 'string'
+              ? data.error
+              : unavailable
+                ? 'Playwright runner is not available. Start the studio with npm run dev.'
+                : undefined;
+            if (!ok && unavailable) {
               status = 'failed';
-              error = err ?? 'Playwright runner is not available';
+              error = err;
             }
             output = JSON.stringify({
               ...data,
               passed: data.passed === true,
               source: data.source ?? (ok ? 'playwright' : 'unavailable'),
               spec,
+              htmlReport: typeof data.htmlReport === 'string' && data.htmlReport.trim()
+                ? data.htmlReport
+                : buildPlaywrightHtmlReport({ ...data, spec, baseUrl }),
             }, null, 2);
             addLog(
               data.passed === true ? 'info' : 'warning',
@@ -644,10 +672,34 @@ export async function executeWorkflow(opts: {
           const upstream = collectUpstream(currentId, wf, nodeOutputs, nodes, agentMap);
           const testCases = extractTestCases({ ...upstream, previous: parseMaybeJson(predOut) });
           const ado = extractAdoWorkItem(upstream, workflowInput);
-          if (testCases?.length) {
+          const fromAdo = ado?.id ?? ado?.workItemId;
+          const sourceWorkItemId = (typeof fromAdo === 'string' || typeof fromAdo === 'number')
+            ? fromAdo
+            : resolveWorkItemId(cfg, workflowInput, upstream);
+          const attachments = collectAdoAttachments({
+            upstream,
+            nodeOutputs,
+            testCases,
+          });
+          const repoFiles = collectAdoRepoFiles({
+            upstream,
+            nodeOutputs,
+            sourceWorkItemId,
+          });
+          const casesToCreate = alreadyUploadedTestCases(upstream) ? [] : (testCases ?? []);
+          if (casesToCreate.length || attachments.length || repoFiles.length) {
+            addLog(
+              'info',
+              'tool',
+              `Publishing ${casesToCreate.length} test case(s), ${attachments.length} attachment(s), and ${repoFiles.length} repo file(s) to Azure DevOps`,
+              currentId,
+            );
             const { ok, data } = await invoke<Record<string, unknown>>('ado-upload', {
-              testCases,
-              sourceWorkItemId: ado?.id ?? resolveWorkItemId(cfg, workflowInput, upstream),
+              testCases: casesToCreate,
+              attachments,
+              repoFiles,
+              adoRepoName: cfg.adoRepoName || defaultAdoRepoName(sourceWorkItemId, typeof ado?.title === 'string' ? ado.title : undefined),
+              sourceWorkItemId,
               adoOrg: cfg.adoOrg || undefined,
               adoProject: cfg.adoProject || undefined,
               adoApiVersion: cfg.adoApiVersion || undefined,
@@ -657,14 +709,22 @@ export async function executeWorkflow(opts: {
             });
             if (ok && !data.error) {
               output = JSON.stringify(data, null, 2);
-              toolCalls = [{ tool: 'Azure DevOps', result: `${data.succeeded ?? 0} published` }];
+              const repoName = data.repository && typeof data.repository === 'object'
+                ? String((data.repository as { repoName?: string }).repoName ?? '')
+                : '';
+              toolCalls = [{
+                tool: 'Azure DevOps',
+                result: `${data.succeeded ?? 0} test case(s), ${data.attached ?? attachments.length} file(s)${repoName ? `, repo ${repoName}` : ''}`,
+              }];
               break;
             }
           }
           output = JSON.stringify({
             published: true,
             skippedRemote: true,
-            workItemId: ado?.id ?? null,
+            workItemId: ado?.id ?? sourceWorkItemId,
+            attachments: attachments.map((file) => file.fileName),
+            repoFiles: repoFiles.map((file) => file.path),
             report: predOut || stringifyOutput(workflowInput),
           }, null, 2);
           toolCalls = [{ tool: 'Azure DevOps', result: 'recorded locally' }];
