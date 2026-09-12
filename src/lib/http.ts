@@ -1,4 +1,4 @@
-const BLOCKED_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', 'metadata.google.internal']);
+import { isBlockedHostname } from '@/lib/ssrf';
 
 export const HTTP_NODE_TYPES = new Set(['http-request', 'api-request', 'rest-api']);
 
@@ -18,26 +18,10 @@ export function assertPublicHttpUrl(raw: string): URL {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('Only http and https URLs are allowed');
   }
-  const host = url.hostname.toLowerCase();
-  if (BLOCKED_HOSTS.has(host) || host.endsWith('.localhost')) {
-    throw new Error('That host is not allowed');
-  }
-  if (isPrivateHostname(host)) {
+  if (isBlockedHostname(url.hostname)) {
     throw new Error('Private network hosts are not allowed');
   }
   return url;
-}
-
-function isPrivateHostname(host: string): boolean {
-  if (host === '169.254.169.254') return true;
-  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!ipv4) return false;
-  const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-  if (a === 10 || a === 127 || a === 0) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 169 && b === 254) return true;
-  return false;
 }
 
 export function newWebhookSecret(): string {

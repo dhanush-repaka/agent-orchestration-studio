@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { defaultAdoRepoName, linkWorkItemHyperlink, upsertAdoGitRepo, type AdoRepoFile } from "../_shared/adoGit.ts";
+import { serverAdoOrg } from "../_shared/ssrf.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -76,7 +77,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const adoOrg = (body.adoOrg && String(body.adoOrg).trim()) || Deno.env.get("ADO_ORG") || "aiqenexus";
+    const adoOrg = serverAdoOrg();
     const apiVersion = (body.adoApiVersion && String(body.adoApiVersion).trim()) || Deno.env.get("ADO_API_VERSION") || "7.0";
     const workItemType = body.adoWorkItemType || "Test Case";
     const tags = body.adoTags || "AI-Orchestration-Agent";
@@ -103,8 +104,9 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
 
     if (credError) {
+      console.error("ado-upload credential read failed", credError);
       return new Response(
-        JSON.stringify({ error: `Failed to read credential: ${credError.message}` }),
+        JSON.stringify({ error: "Could not load the Azure DevOps credential" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
@@ -360,8 +362,9 @@ Deno.serve(async (req: Request) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (err) {
+    console.error("ado-upload failed", err);
     return new Response(
-      JSON.stringify({ error: err.message ?? "Unexpected error" }),
+      JSON.stringify({ error: "Could not publish to Azure DevOps" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }

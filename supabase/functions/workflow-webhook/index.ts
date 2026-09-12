@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { invokeSibling } from "../_shared/invoke.ts";
+import { timingSafeEqual } from "../_shared/ssrf.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -27,18 +28,19 @@ Deno.serve(async (req: Request) => {
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const { data: rows, error } = await supabase.from("workflows").select("id, data");
-    if (error) return json(500, { error: error.message });
+    if (error) {
+      console.error("workflow-webhook load failed", error);
+      return json(401, { error: "Invalid webhook secret" });
+    }
 
     const match = (rows ?? []).find((row) => {
-      const data = (row.data ?? {}) as { webhookSecret?: string; triggerType?: string };
-      if (workflowId && row.id === workflowId) return !data.webhookSecret || data.webhookSecret === secret;
-      if (!workflowId && secret && data.webhookSecret === secret) return true;
-      return false;
+      const data = (row.data ?? {}) as { webhookSecret?: string };
+      const expected = data.webhookSecret ?? "";
+      if (!expected) return false;
+      if (workflowId && row.id !== workflowId) return false;
+      return timingSafeEqual(expected, secret);
     });
-    if (!match) return json(404, { error: "Workflow not found. Save it in the studio first." });
-
-    const data = (match.data ?? {}) as { webhookSecret?: string; triggerType?: string };
-    if (data.webhookSecret && data.webhookSecret !== secret) return json(401, { error: "Invalid webhook secret" });
+    if (!match) return json(401, { error: "Invalid webhook secret" });
 
     const id = `trg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const { error: insertError } = await supabase.from("workflow_triggers").insert({
@@ -48,7 +50,10 @@ Deno.serve(async (req: Request) => {
       payload,
       status: "queued",
     });
-    if (insertError) return json(500, { error: insertError.message });
+    if (insertError) {
+      console.error("workflow-webhook insert failed", insertError);
+      return json(401, { error: "Invalid webhook secret" });
+    }
 
     const { data: agentRows } = await supabase.from("agents").select("data");
     const agents = (agentRows ?? []).map((row) => row.data);
@@ -75,6 +80,7 @@ Deno.serve(async (req: Request) => {
 
     return json(202, { ok: true, triggerId: id, workflowId: match.id, status: "queued" });
   } catch (err) {
-    return json(400, { error: err instanceof Error ? err.message : "Webhook failed" });
+    console.error("workflow-webhook failed", err);
+    return json(401, { error: "Invalid webhook secret" });
   }
 });

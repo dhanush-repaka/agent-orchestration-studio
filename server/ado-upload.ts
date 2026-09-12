@@ -59,7 +59,7 @@ export async function publishToAzureDevOps(body: {
   adoPat?: string;
   linkToSource?: boolean;
 }): Promise<{ status: number; body: Record<string, unknown> }> {
-  const adoOrg = cleanOrg(String(body.adoOrg || process.env.ADO_ORG || 'aiqenexus'));
+  const adoOrg = cleanOrg(String(process.env.ADO_ORG || 'aiqenexus'));
   const apiVersion = String(body.adoApiVersion || '7.0');
   const workItemType = body.adoWorkItemType || 'Test Case';
   const tags = body.adoTags || 'AI-Orchestration-Agent';

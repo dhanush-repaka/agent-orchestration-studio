@@ -8,9 +8,15 @@ describe('assertPublicHttpUrl', () => {
   });
 
   it('rejects localhost and private hosts', () => {
-    expect(() => assertPublicHttpUrl('http://127.0.0.1/secret')).toThrow(/not allowed/);
+    expect(() => assertPublicHttpUrl('http://127.0.0.1/secret')).toThrow(/not allowed|Private/);
     expect(() => assertPublicHttpUrl('http://10.0.0.4/x')).toThrow(/Private/);
     expect(() => assertPublicHttpUrl('file:///etc/passwd')).toThrow(/http/);
+  });
+
+  it('rejects encoded loopback and IPv6-mapped hosts', () => {
+    expect(() => assertPublicHttpUrl('http://2130706433/secret')).toThrow(/Private|not allowed/);
+    expect(() => assertPublicHttpUrl('http://[::1]/secret')).toThrow(/Private|not allowed/);
+    expect(() => assertPublicHttpUrl('http://[::ffff:127.0.0.1]/secret')).toThrow(/Private|not allowed/);
   });
 });
 

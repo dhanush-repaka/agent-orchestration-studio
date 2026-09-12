@@ -40,7 +40,10 @@ Deno.serve(async (req: Request) => {
   let workflow = body.workflow;
   if (!workflow?.nodes && body.workflowId) {
     const { data, error } = await supabase.from("workflows").select("data").eq("id", body.workflowId).maybeSingle();
-    if (error) return json(500, { error: error.message });
+    if (error) {
+      console.error("execute-workflow load failed", error);
+      return json(500, { error: "Could not load the workflow" });
+    }
     workflow = data?.data as Workflow | undefined;
   }
   if (!workflow?.nodes) return json(400, { error: "Workflow is required" });

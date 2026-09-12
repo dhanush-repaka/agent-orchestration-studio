@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { serverAdoOrg } from "../_shared/ssrf.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -30,7 +31,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const adoOrg = (body.adoOrg && String(body.adoOrg).trim()) || Deno.env.get("ADO_ORG");
+    const adoOrg = serverAdoOrg();
     const llmApiKey = Deno.env.get("LLM_API_KEY");
     const llmBaseUrl = (Deno.env.get("LLM_BASE_URL") ?? "https://api.openai.com/v1").replace(/\/$/, "");
     const llmModel = "gpt-4o-mini";
@@ -59,8 +60,9 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
 
     if (credError) {
+      console.error("ado-retrieval credential read failed", credError);
       return new Response(
-        JSON.stringify({ error: `Failed to read credential: ${credError.message}` }),
+        JSON.stringify({ error: "Could not load the Azure DevOps credential" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
@@ -123,8 +125,9 @@ Deno.serve(async (req: Request) => {
 
     if (!adoRes.ok) {
       const adoErr = await adoRes.text();
+      console.error("ado-retrieval ADO request failed", adoRes.status, usedUrl, adoErr);
       return new Response(
-        JSON.stringify({ error: `Azure DevOps request failed (${adoRes.status}): ${adoErr}`, requestUrl: usedUrl, attemptedUrls: [adoUrl, altAdoUrl] }),
+        JSON.stringify({ error: "Could not load the work item" }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
@@ -207,8 +210,9 @@ Deno.serve(async (req: Request) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (err) {
+    console.error("ado-retrieval failed", err);
     return new Response(
-      JSON.stringify({ error: err.message ?? "Unexpected error" }),
+      JSON.stringify({ error: "Could not load the work item" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }

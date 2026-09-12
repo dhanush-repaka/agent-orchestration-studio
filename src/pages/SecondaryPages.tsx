@@ -84,7 +84,8 @@ export function ToolsPage() {
 
     setLoading(false);
     if (error) {
-      addToast(`Failed to load config: ${error.message}`, 'error');
+      console.error('Failed to load tool config', error);
+      addToast('Could not load that integration', 'error');
       return;
     }
     if (data) {
@@ -123,7 +124,8 @@ export function ToolsPage() {
       });
     setSaving(false);
     if (error) {
-      addToast(`Failed to save: ${error.message}`, 'error');
+      console.error('Failed to save tool config', error);
+      addToast('Could not save that integration', 'error');
       return;
     }
     addToast(`${editingTool.name} configuration saved`, 'success');
@@ -520,7 +522,8 @@ export function CredentialsPage() {
 
     setLoading(false);
     if (error) {
-      addToast(`Failed to load credential: ${error.message}`, 'error');
+      console.error('Failed to load credential', error);
+      addToast('Could not load that credential', 'error');
       return;
     }
     if (data) {
@@ -551,7 +554,8 @@ export function CredentialsPage() {
       .upsert(upsertPayload);
     setSaving(false);
     if (error) {
-      addToast(`Failed to save: ${error.message}`, 'error');
+      console.error('Failed to save credential', error);
+      addToast('Could not save that credential', 'error');
       return;
     }
     addToast(`${config.name} credential saved`, 'success');
@@ -932,7 +936,8 @@ export function SettingsPage() {
 
     setLoading(false);
     if (error) {
-      addToast(`Failed to load user: ${error.message}`, 'error');
+      console.error('Failed to load user', error);
+      addToast('Could not load that user', 'error');
       return;
     }
     if (data) {
@@ -956,7 +961,8 @@ export function SettingsPage() {
       });
     setSaving(false);
     if (error) {
-      addToast(`Failed to save: ${error.message}`, 'error');
+      console.error('Failed to save user', error);
+      addToast('Could not save that user', 'error');
       return;
     }
     updateUser(editingUser.id, { name: editName, email: editEmail, role: editRole });

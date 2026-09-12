@@ -72,7 +72,7 @@ export function adoDevProxy(): Plugin {
             json(res, 400, { error: 'workItemId (number) is required' });
             return;
           }
-          const adoOrg = String(body.adoOrg || DEFAULT_ORG).trim();
+          const adoOrg = String(process.env.ADO_ORG || DEFAULT_ORG).trim();
           const apiVersion = String(body.adoApiVersion || '7.0').trim();
           if (!adoPat) {
             json(res, 500, { error: 'Azure DevOps PAT is not configured for local retrieval' });
