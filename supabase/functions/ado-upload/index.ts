@@ -229,6 +229,16 @@ Deno.serve(async (req: Request) => {
             success: false,
             error: `ADO create failed (${createRes.status}): ${errText}`,
           });
+          if (createRes.status === 401 || /personal access token[^\n]{0,80}expired|tf401349/i.test(errText)) {
+            for (const remaining of testCases.slice(results.length)) {
+              results.push({
+                title: remaining.title ?? "Untitled Test Case",
+                success: false,
+                error: "Skipped: Azure DevOps PAT is expired or unauthorized",
+              });
+            }
+            break;
+          }
         }
       } catch (err) {
         results.push({

@@ -147,7 +147,18 @@ export async function publishToAzureDevOps(body: {
         const created = await createRes.json() as { id?: number; url?: string };
         results.push({ title, success: true, workItemId: created.id, url: created.url });
       } else {
-        results.push({ title, success: false, error: `ADO create failed (${createRes.status}): ${await createRes.text()}` });
+        const detail = await createRes.text();
+        results.push({ title, success: false, error: `ADO create failed (${createRes.status}): ${detail}` });
+        if (createRes.status === 401 || /personal access token[^\n]{0,80}expired|tf401349/i.test(detail)) {
+          for (const remaining of testCases.slice(results.length)) {
+            results.push({
+              title: remaining.title ?? 'Untitled Test Case',
+              success: false,
+              error: 'Skipped: Azure DevOps PAT is expired or unauthorized',
+            });
+          }
+          break;
+        }
       }
     } catch (err) {
       results.push({ title, success: false, error: err instanceof Error ? err.message : 'Network error' });

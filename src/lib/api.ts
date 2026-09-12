@@ -31,7 +31,24 @@ export async function callEdgeFunction<T = unknown>(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      const localData = (await localRes.json().catch(() => ({}))) as T;
+      const contentType = localRes.headers.get('content-type') || '';
+      const raw = await localRes.text();
+      const looksJson = contentType.includes('application/json') || raw.trim().startsWith('{') || raw.trim().startsWith('[');
+      if (slug.startsWith('playwright-') && !looksJson) {
+        const timedOut = localRes.status === 502 || localRes.status === 504 || localRes.status === 408 || localRes.status === 500;
+        return {
+          ok: false,
+          status: localRes.status,
+          data: {
+            error: timedOut
+              ? 'Playwright runner timed out on the host. qefoundry.com functions stop at 26s; run the suite locally with npm run dev.'
+              : 'Playwright runner did not return JSON. Redeploy qefoundry.com so /__studio/playwright-execute reaches the Netlify Chromium function.',
+            source: 'unavailable',
+            passed: false,
+          } as T,
+        };
+      }
+      const localData = (looksJson ? (() => { try { return JSON.parse(raw) as T; } catch { return {} as T; } })() : {} as T);
       if (localRes.ok || slug.startsWith('playwright-')) {
         return { ok: localRes.ok, status: localRes.status, data: localData };
       }

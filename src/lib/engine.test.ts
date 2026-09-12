@@ -309,6 +309,79 @@ describe('user story workflow', () => {
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"failed": 0');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"passed": true');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n15')?.status).toBe('completed');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n12')?.output).toContain('Total tests: 9');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n12')?.output).not.toContain('Total tests: 10');
+  });
+
+  it('keeps the LLM test-case count and runs that many Playwright tests', async () => {
+    const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
+    const { countPlaywrightTests } = await import('@/lib/playwrightSpec');
+    const loginCases = [
+      { id: 'TC-001', title: 'Successful User Login', type: 'functional', priority: 'high', expectedOutcome: 'logged in' },
+      { id: 'TC-002', title: 'Invalid Credentials', type: 'negative', priority: 'high', expectedOutcome: 'error' },
+      { id: 'TC-003', title: 'Login Page Accessibility', type: 'functional', priority: 'medium', expectedOutcome: 'visible' },
+    ];
+    const invoke: InvokeFn = async (slug, payload) => {
+      if (slug === 'ado-retrieval' || slug === 'ado-upload') {
+        if (slug === 'ado-upload') {
+          const cases = Array.isArray(payload.testCases) ? payload.testCases as { title?: string }[] : [];
+          if (cases.length) {
+            expect(cases).toHaveLength(3);
+            expect(cases.map((tc) => tc.title)).toEqual(loginCases.map((tc) => tc.title));
+          }
+        }
+        return { ok: false, status: 500, data: { error: 'offline' } as never };
+      }
+      if (slug === 'playwright-execute') {
+        const spec = String((payload as { spec?: string }).spec ?? '');
+        expect(countPlaywrightTests(spec)).toBe(3);
+        expect(spec).toContain('Successful User Login');
+        expect(spec).toContain('Invalid Credentials');
+        expect(spec).toContain('Login Page Accessibility');
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            passed: true,
+            total: 3,
+            failed: 0,
+            results: loginCases.map((tc) => ({ title: tc.title, status: 'passed' })),
+            source: 'playwright',
+          } as never,
+        };
+      }
+      if (slug === 'playwright-locators') {
+        return { ok: true, status: 200, data: { locators: [], source: 'playwright' } as never };
+      }
+      const type = String((payload as { agentType?: string }).agentType ?? '');
+      const result = type === 'Test Case Generator'
+        ? { testCases: loginCases }
+        : type === 'Playwright Automation'
+          ? 'import { test } from "@playwright/test";\ntest("Successful User Login", async ({ page }) => { await page.fill("input[name=username]", "validUser"); });'
+          : type === 'Requirement Analysis'
+            ? { workItemId: '99', title: 'Login', qualityScore: 82, acceptanceCriteria: ['sign in'], businessObjective: 'Login' }
+            : { ok: true };
+      return { ok: true, status: 200, data: { result, llmUsage: { total_tokens: 8 } } as never };
+    };
+
+    const run = await executeWorkflow({
+      workflow: SAMPLE_WORKFLOW,
+      agents: AGENTS,
+      runtimeInput: '{"workItemId":99}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: {
+        isCancelled: () => false,
+        onNodeStatus: () => {},
+        waitForApproval: async () => true,
+      },
+    });
+
+    const n5 = JSON.parse(run.nodeExecutions.find((n) => n.nodeId === 'n5')?.output ?? '{}');
+    expect(n5.testCases).toHaveLength(3);
+    expect(n5.testCases[0].title).toBe('Successful User Login');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n12')?.output).toContain('Total tests: 3');
   });
 
   it('sends failing Playwright results to healing instead of inventing a pass', async () => {
@@ -371,7 +444,8 @@ describe('user story workflow', () => {
     expect(ids).toContain('n17');
     expect(ids).toContain('n18');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"passed": false');
-    expect(run.nodeExecutions.find((n) => n.nodeId === 'n12')?.output).toContain('Healed after a real failure');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n12')?.output).toContain('Total tests: 1');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n12')?.output).toContain('FAILED register');
   });
 
     it('uploads test cases, attaches reports, and sends the spec to an ADO repo', async () => {

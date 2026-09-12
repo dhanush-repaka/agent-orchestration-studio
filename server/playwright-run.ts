@@ -72,8 +72,8 @@ export default defineConfig({
   testDir: '.',
   testMatch: 'generated.spec.ts',
   outputDir: './test-results',
-  timeout: 30000,
-  retries: 1,
+  timeout: ${onLambda() ? 12000 : 30000},
+  retries: ${onLambda() ? 0 : 1},
   workers: 1,
   fullyParallel: false,
   reporter: [['json', { outputFile: 'results.json' }], ['list']],
@@ -113,8 +113,11 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
     };
   }
   const baseUrl = String(body.baseUrl || DEFAULT_PLAYWRIGHT_BASE_URL).replace(/\/$/, '');
-  const timeoutSec = Math.min(240, Math.max(30, Number(body.timeoutSec) || 90));
-  const root = onLambda() ? tmpdir() : join(process.cwd(), '.aos-runs');
+  const lambda = onLambda();
+  const timeoutSec = lambda
+    ? Math.min(18, Math.max(10, Number(body.timeoutSec) || 18))
+    : Math.min(240, Math.max(30, Number(body.timeoutSec) || 90));
+  const root = lambda ? tmpdir() : join(process.cwd(), '.aos-runs');
   const dir = join(root, `pw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const started = Date.now();
   const chrome = await resolveChrome();
@@ -124,7 +127,7 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
       process.execPath,
       [cli, 'test', `--config=${join(dir, 'playwright.config.ts')}`],
       process.cwd(),
-      (timeoutSec + 20) * 1000,
+      lambda ? 22000 : (timeoutSec + 20) * 1000,
     );
     const resultsPath = join(dir, 'results.json');
     let report: unknown = null;

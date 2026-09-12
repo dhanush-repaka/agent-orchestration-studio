@@ -7,8 +7,9 @@ import { evaluateCondition, getByPath, interpolate, parseJson, type InterpContex
 import { collectAdoAttachments, collectAdoRepoFiles } from "./adoArtifacts.ts";
 import { defaultAdoRepoName } from "./adoGit.ts";
 import {
+  alignSpecToTestCases,
   buildPlaywrightHtmlReport,
-  ensureParabankCoverage,
+  buildQeMarkdownReport,
   extractLocators,
   extractPlaywrightSpec,
   findLatestPlaywrightExecute,
@@ -217,10 +218,16 @@ function alreadyUploadedTestCases(upstream: Record<string, unknown>): boolean {
   return false;
 }
 
+function looksLikeUploadResults(value: unknown[]): boolean {
+  const sample = value[0] as Record<string, unknown>;
+  return 'success' in sample && !('expectedOutcome' in sample) && !('priority' in sample) && !('preconditions' in sample);
+}
+
 function extractTestCases(upstream: Record<string, unknown>): unknown[] | null {
   const visit = (value: unknown): unknown[] | null => {
     if (!value) return null;
     if (Array.isArray(value) && value.length && typeof value[0] === 'object' && value[0] && 'title' in (value[0] as object)) {
+      if (looksLikeUploadResults(value)) return null;
       return value;
     }
     if (typeof value !== 'object') return null;
@@ -237,6 +244,17 @@ function extractTestCases(upstream: Record<string, unknown>): unknown[] | null {
     if (found) return found;
   }
   return null;
+}
+
+function firstAdoAuthError(data: Record<string, unknown>): string | undefined {
+  const blob = JSON.stringify(data);
+  if (/personal access token[^\n]{0,80}expired|tf401349|access denied/i.test(blob)) {
+    return 'Azure DevOps PAT has expired. Save a new PAT on the Credentials page with Work Items and Code (Read & Write).';
+  }
+  if (/\b401\b/.test(blob) && /ado create failed/i.test(blob)) {
+    return 'Azure DevOps rejected the upload (401). Save a new PAT on the Credentials page.';
+  }
+  return undefined;
 }
 
 function resolveWorkItemId(cfg: NodeRuntimeConfig, workflowInput: unknown, upstream: Record<string, unknown>): number | string | null {
@@ -342,6 +360,17 @@ async function runAgentNode(
       priorityMap: cfg.priorityMap || undefined,
     });
     if (ok && !data.error) {
+      const succeeded = Number(data.succeeded ?? 0);
+      const failed = Number(data.failed ?? 0);
+      if (failed > 0 && succeeded === 0) {
+        const err = firstAdoAuthError(data) ?? 'ADO upload failed for every test case';
+        return {
+          output: JSON.stringify({ ...data, error: err }, null, 2),
+          tokens: 0,
+          error: err,
+          toolCalls: [{ tool: 'Azure DevOps', result: err }],
+        };
+      }
       return {
         output: JSON.stringify(data, null, 2),
         tokens: 0,
@@ -382,11 +411,24 @@ async function runAgentNode(
 
   if (agent.type === 'Playwright Automation') {
     const baseUrl = resolvePlaywrightBaseUrl(cfg, workflowInput);
-    payload.userPrompt = `${payload.userPrompt ?? ''}\n\nTarget application base URL: ${baseUrl}\nFor Parabank registration use ${baseUrl}/register.htm and unique usernames. Prefer these field names: customer.firstName, customer.lastName, customer.address.street, customer.address.city, customer.address.state, customer.address.zipCode, customer.phoneNumber, customer.ssn, customer.username, customer.password, repeatedPassword. Return ONLY TypeScript for @playwright/test.`;
+    const cases = extractTestCases({ ...upstream, inputs: resolvedInputs });
+    payload.userPrompt = `${payload.userPrompt ?? ''}\n\nTarget application base URL: ${baseUrl}\nUse page.goto with paths from the test cases or this base URL. Return ONLY TypeScript for @playwright/test.`;
+    if (cases?.length) {
+      payload.userPrompt = `${payload.userPrompt}\n\nAuthoritative test cases (${cases.length}). Emit exactly one test() per case and use that case title as the test name. Do not add extra tests or drop cases.\n${JSON.stringify(cases)}`;
+    }
+  }
+  if (agent.type === 'Test Data Generator') {
+    const cases = extractTestCases(upstream);
+    if (cases?.length) {
+      payload.userPrompt = `${payload.userPrompt ?? ''}\n\nAuthoritative test cases (generate data for these only; ignore ADO upload errors):\n${JSON.stringify(cases)}`;
+    }
   }
   if (agent.type === 'Report Generator') {
     const execute = findLatestPlaywrightExecute(nodeOutputs);
-    payload.userPrompt = `${payload.userPrompt ?? ''}\n\nAuthoritative Playwright results (use these; do not write a report that only restates a condition expression):\n${stringifyOutput(execute ?? { error: 'No Playwright execute result found' })}`;
+    if (execute) {
+      return { output: buildQeMarkdownReport(execute), tokens: 0, model: 'deterministic-report' };
+    }
+    payload.userPrompt = `${payload.userPrompt ?? ''}\n\nAuthoritative Playwright results (use these; do not write a report that only restates a condition expression):\n${stringifyOutput({ error: 'No Playwright execute result found' })}`;
   }
 
   log('info', 'agent', `Calling ${agent.displayName} (${agent.modelProvider} / ${agent.modelName})`);
@@ -600,7 +642,7 @@ export async function executeWorkflow(opts: {
               ? 'execute'
               : 'locators');
           const upstream = collectUpstream(currentId, wf, nodeOutputs, nodes, agentMap);
-          const spec = ensureParabankCoverage(
+          const spec = alignSpecToTestCases(
             extractPlaywrightSpec(predOut, { ...upstream, previous: parseMaybeJson(predOut) }),
             { workflowInput, upstream },
           );
@@ -622,13 +664,14 @@ export async function executeWorkflow(opts: {
             });
             const unavailable = data.source === 'unavailable'
               || data.code === 'NOT_FOUND'
-              || String(data.message ?? '').includes('Requested function was not found');
+              || String(data.message ?? '').includes('Requested function was not found')
+              || (!ok && !Array.isArray(data.results) && data.passed !== true);
             const err = typeof data.error === 'string'
               ? data.error
               : unavailable
-                ? 'Playwright runner is not available. Start the studio with npm run dev.'
+                ? 'Playwright runner is not available on this host. qefoundry.com functions stop at 26s; run the suite locally with npm run dev.'
                 : undefined;
-            if (!ok && unavailable) {
+            if (unavailable) {
               status = 'failed';
               error = err;
             }

@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PLAYWRIGHT_BASE_URL,
   PARABANK_REGISTRATION_TEST_CASES,
+  alignSpecToTestCases,
   buildParabankSuiteFromCases,
   buildPlaywrightHtmlReport,
+  buildQeMarkdownReport,
   countPlaywrightTests,
-  ensureParabankCoverage,
   extractPlaywrightSpec,
   findLatestPlaywrightExecute,
   flattenPlaywrightJsonReport,
@@ -34,23 +35,52 @@ describe('playwrightSpec', () => {
     expect(extractPlaywrightSpec(JSON.stringify({ locators: ['page.locator("body")'], spec }), {})).toContain('register');
   });
 
-  it('replaces placeholder login with one passing test per generated case', () => {
+  it('builds one Playwright test per generated case and keeps those titles', () => {
     const generated = `import { test } from "@playwright/test";
-test("login", async ({ page }) => {
-  await page.goto("https://parabank.parasoft.com/parabank");
+test("Successful User Login", async ({ page }) => {
+  await page.goto("https://example.test/login");
   await page.fill('input[name="username"]', 'validUser');
 });`;
-    const next = ensureParabankCoverage(generated, {
-      title: 'Parabank Registration',
-      testCases: PARABANK_REGISTRATION_TEST_CASES,
+    const cases = [
+      { id: 'TC-001', title: 'Successful User Login', type: 'functional', expectedOutcome: 'logged in' },
+      { id: 'TC-002', title: 'Invalid Credentials', type: 'negative', expectedOutcome: 'error' },
+      { id: 'TC-003', title: 'SQL Injection', type: 'security', expectedOutcome: 'rejected' },
+    ];
+    const next = alignSpecToTestCases(generated, { testCases: cases });
+    expect(countPlaywrightTests(next)).toBe(3);
+    expect(next).toContain('Successful User Login');
+    expect(next).toContain('Invalid Credentials');
+    expect(next).toContain('SQL Injection');
+    expect(next).toContain('validUser');
+    expect(next).toContain('rejected');
+  });
+
+  it('keeps a generated spec that already has one test per case', () => {
+    const generated = `import { test } from "@playwright/test";
+test("Open home", async ({ page }) => { await page.goto("/"); });
+test("Open about", async ({ page }) => { await page.goto("/about"); });`;
+    const next = alignSpecToTestCases(generated, {
+      testCases: [
+        { title: 'Open home', type: 'functional', expectedOutcome: 'home' },
+        { title: 'Open about', type: 'functional', expectedOutcome: 'about' },
+      ],
     });
-    expect(next).not.toContain('validUser');
-    expect(next).toContain('register.htm');
-    expect(next).toContain('customer.firstName');
-    expect(countPlaywrightTests(next)).toBe(9);
-    for (const tc of PARABANK_REGISTRATION_TEST_CASES) {
-      expect(next).toContain(tc.title);
-    }
+    expect(next).toBe(generated);
+  });
+
+  it('builds a report from execute totals instead of inventing counts', () => {
+    const report = buildQeMarkdownReport({
+      passed: false,
+      total: 8,
+      failed: 8,
+      source: 'unavailable',
+      error: 'timed out',
+      results: [],
+    });
+    expect(report).toContain('Total tests: 8');
+    expect(report).toContain('Failed: 8');
+    expect(report).not.toContain('Total tests: 10');
+    expect(report).toContain('timed out');
   });
 
   it('builds a 9-test suite from generated test cases', () => {

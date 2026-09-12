@@ -151,8 +151,8 @@ export function classifyParabankCase(title: string, extras = ''): ParabankKind |
   return null;
 }
 
-export function extractTestCasesFromContext(context: unknown): Array<{ title: string; id?: string; type?: string; description?: string }> {
-  const found: Array<{ title: string; id?: string; type?: string; description?: string }> = [];
+export function extractTestCasesFromContext(context: unknown): Array<{ title: string; id?: string; type?: string; description?: string; expectedOutcome?: string }> {
+  const found: Array<{ title: string; id?: string; type?: string; description?: string; expectedOutcome?: string }> = [];
   const seen = new Set<string>();
   const visit = (value: unknown, depth = 0) => {
     if (!value || depth > 8) return;
@@ -166,7 +166,7 @@ export function extractTestCasesFromContext(context: unknown): Array<{ title: st
         }
         for (const item of value) {
           if (!item || typeof item !== 'object') continue;
-          const rec = item as { title?: unknown; id?: unknown; type?: unknown; description?: unknown };
+          const rec = item as { title?: unknown; id?: unknown; type?: unknown; description?: unknown; expectedOutcome?: unknown };
           const title = String(rec.title ?? '').trim();
           if (!title || seen.has(title)) continue;
           seen.add(title);
@@ -175,6 +175,7 @@ export function extractTestCasesFromContext(context: unknown): Array<{ title: st
             id: rec.id != null ? String(rec.id) : undefined,
             type: rec.type != null ? String(rec.type) : undefined,
             description: rec.description != null ? String(rec.description) : undefined,
+            expectedOutcome: rec.expectedOutcome != null ? String(rec.expectedOutcome) : undefined,
           });
         }
         return;
@@ -295,17 +296,111 @@ export function countPlaywrightTests(spec: string): number {
   return [...spec.matchAll(/\btest\s*\(\s*(?!describe\b)/g)].length;
 }
 
-export function ensureParabankCoverage(spec: string, context: unknown = {}): string {
-  const cases = extractTestCasesFromContext(context);
-  const blob = `${spec}\n${typeof context === 'string' ? context : JSON.stringify(context ?? '')}`;
-  const aboutRegister = /register/i.test(blob) || cases.length > 0;
-  const placeholderLogin = /validuser|validpassword|validusername/i.test(spec);
-  if (!aboutRegister && !placeholderLogin) return spec;
-  if (cases.length) return buildParabankSuiteFromCases(cases);
-  if (countPlaywrightTests(spec) >= PARABANK_REGISTRATION_TEST_CASES.length && /register\.htm/i.test(spec)) {
-    return spec;
+export function extractPlaywrightTests(spec: string): Array<{ title: string; body: string }> {
+  const tests: Array<{ title: string; body: string }> = [];
+  const re = /\btest\s*\(\s*(['"`])([\s\S]*?)\1\s*,\s*async\s*\(\s*\{\s*page\s*\}\s*\)\s*=>\s*\{/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(spec))) {
+    let depth = 1;
+    let i = match.index + match[0].length;
+    while (i < spec.length && depth > 0) {
+      if (spec[i] === '{') depth += 1;
+      else if (spec[i] === '}') depth -= 1;
+      i += 1;
+    }
+    tests.push({
+      title: match[2].replace(/\\(['"`])/g, '$1'),
+      body: spec.slice(match.index + match[0].length, i - 1).trim(),
+    });
   }
-  return buildParabankSuiteFromCases([...PARABANK_REGISTRATION_TEST_CASES]);
+  return tests;
+}
+
+function specCoversCases(spec: string, cases: Array<{ title: string }>): boolean {
+  if (!spec.trim() || countPlaywrightTests(spec) !== cases.length) return false;
+  const titles = extractPlaywrightTests(spec).map((test) => test.title.trim().toLowerCase());
+  return cases.every((tc) => titles.includes(tc.title.trim().toLowerCase()));
+}
+
+function indentTestBody(body: string): string {
+  return body
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trimEnd();
+      if (!trimmed.trim()) return '';
+      return trimmed.startsWith('    ') ? trimmed : `    ${trimmed.trim()}`;
+    })
+    .join('\n');
+}
+
+function genericCaseBody(tc: { description?: string; expectedOutcome?: string }): string {
+  const expected = String(tc.expectedOutcome ?? '').trim();
+  const lines = ['    await page.goto("");', '    await expect(page.locator("body")).toBeVisible();'];
+  if (expected) {
+    lines.push(`    await expect(page.locator("body")).toContainText(${JSON.stringify(expected)});`);
+  }
+  return lines.join('\n');
+}
+
+export function buildSuiteFromGeneratedCases(
+  spec: string,
+  cases: Array<{ title?: string; type?: string; description?: string; expectedOutcome?: string }>,
+): string {
+  const fromSpec = extractPlaywrightTests(spec);
+  const tests = cases.map((tc, index) => {
+    const title = String(tc.title ?? `TC-${String(index + 1).padStart(3, '0')}`);
+    const matched = fromSpec.find((item) => item.title.trim().toLowerCase() === title.trim().toLowerCase());
+    let body = matched?.body;
+    if (!body) {
+      const kind = classifyParabankCase(title, `${tc.type ?? ''} ${tc.description ?? ''}`);
+      body = kind ? testBody(kind) : genericCaseBody(tc);
+    }
+    return `  test(${JSON.stringify(title)}, async ({ page }) => {\n${indentTestBody(body)}\n  });`;
+  });
+  return `import { test, expect } from "@playwright/test";
+
+test.describe("generated cases", () => {
+${tests.join('\n\n')}
+});
+`;
+}
+
+export function alignSpecToTestCases(spec: string, context: unknown = {}): string {
+  const cases = extractTestCasesFromContext(context);
+  if (!cases.length) return spec;
+  if (specCoversCases(spec, cases)) return spec;
+  return buildSuiteFromGeneratedCases(spec, cases);
+}
+
+export function buildQeMarkdownReport(execute: Record<string, unknown>): string {
+  const results = Array.isArray(execute.results)
+    ? execute.results as { title?: string; status?: string; error?: string }[]
+    : [];
+  const total = Number(execute.total ?? results.length);
+  const failed = Number(execute.failed ?? results.filter((row) => row.status && row.status !== 'passed' && row.status !== 'skipped').length);
+  const source = String(execute.source ?? 'unknown');
+  const error = execute.error != null ? String(execute.error) : '';
+  const lines = [
+    '# QE report',
+    '',
+    `- Playwright source: ${source}`,
+    `- Total tests: ${total}`,
+    `- Passed: ${execute.passed === true ? 'yes' : 'no'}`,
+    `- Failed: ${failed}`,
+  ];
+  if (error || source === 'unavailable') {
+    lines.push(`- Error: ${error || 'Playwright runner did not execute these tests.'}`);
+  }
+  lines.push('', '## Results');
+  if (!results.length) {
+    lines.push(source === 'unavailable' ? '- No tests ran.' : '- No test rows.');
+  } else {
+    for (const row of results) {
+      const status = String(row.status ?? 'unknown').toUpperCase();
+      lines.push(`- ${status} ${row.title ?? 'test'}${row.error ? ` — ${row.error}` : ''}`);
+    }
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 export function resolvePlaywrightBaseUrl(
