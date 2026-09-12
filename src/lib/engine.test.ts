@@ -338,6 +338,8 @@ describe('user story workflow', () => {
         expect(spec).toContain('Successful User Login');
         expect(spec).toContain('Invalid Credentials');
         expect(spec).toContain('Login Page Accessibility');
+        expect(spec).not.toContain('validUser');
+        expect(spec).toContain('form input[type="submit"]');
         return {
           ok: true,
           status: 200,
@@ -382,6 +384,206 @@ describe('user story workflow', () => {
     expect(n5.testCases).toHaveLength(3);
     expect(n5.testCases[0].title).toBe('Successful User Login');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n12')?.output).toContain('Total tests: 3');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n9c')?.status).toBe('completed');
+    expect(run.nodeExecutions.map((n) => n.nodeId)).not.toContain('n19');
+  });
+
+  it('rewrites the Playwright spec when Code Review scores it badly', async () => {
+    const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
+    const cases = [
+      { id: 'TC-001', title: 'Verify Registration Link Navigation', type: 'functional', priority: 'high', expectedOutcome: 'The page loads successfully' },
+      { id: 'TC-002', title: 'Successful Registration with Valid Data', type: 'functional', priority: 'high', expectedOutcome: 'created' },
+    ];
+    const invoke: InvokeFn = async (slug, payload) => {
+      if (slug === 'ado-retrieval' || slug === 'ado-upload') {
+        return { ok: false, status: 500, data: { error: 'offline' } as never };
+      }
+      if (slug === 'playwright-execute') {
+        const spec = String((payload as { spec?: string }).spec ?? '');
+        expect(spec).toContain('register.htm');
+        expect(spec).toContain('getByRole("link"');
+        expect(spec).not.toContain('https://parabank.parasoft.com/register');
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            passed: true,
+            total: 2,
+            failed: 0,
+            results: cases.map((tc) => ({ title: tc.title, status: 'passed' })),
+            source: 'playwright',
+          } as never,
+        };
+      }
+      if (slug === 'playwright-locators') {
+        return { ok: true, status: 200, data: { locators: [], source: 'playwright' } as never };
+      }
+      const type = String((payload as { agentType?: string }).agentType ?? '');
+      const result = type === 'Test Case Generator'
+        ? { testCases: cases }
+        : type === 'Playwright Automation'
+          ? 'import { test } from "@playwright/test";\ntest("Verify Registration Link Navigation", async ({ page }) => { await page.goto("https://parabank.parasoft.com/register"); });'
+          : type === 'Code Review'
+            ? { score: 3, issues: [{ type: 'Missing Locator', description: '404 path' }] }
+            : type === 'Requirement Analysis'
+              ? { workItemId: '21', title: 'Registration', qualityScore: 80, acceptanceCriteria: ['sign up'], businessObjective: 'Sign up' }
+              : { ok: true };
+      return { ok: true, status: 200, data: { result, llmUsage: { total_tokens: 6 } } as never };
+    };
+
+    const run = await executeWorkflow({
+      workflow: SAMPLE_WORKFLOW,
+      agents: AGENTS,
+      runtimeInput: '{"workItemId":21,"baseUrl":"https://parabank.parasoft.com/parabank"}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: {
+        isCancelled: () => false,
+        onNodeStatus: () => {},
+        waitForApproval: async () => true,
+      },
+    });
+
+    expect(run.nodeExecutions.map((n) => n.nodeId)).toContain('n19');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n19')?.output).toContain('register.htm');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n19')?.output).not.toContain('https://parabank.parasoft.com/register');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"passed": true');
+  });
+
+  it('skips Code Change when Code Review is acceptable', async () => {
+    const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
+    const invoke: InvokeFn = async (slug, payload) => {
+      if (slug === 'ado-retrieval' || slug === 'ado-upload') {
+        return { ok: false, status: 500, data: { error: 'offline' } as never };
+      }
+      if (slug === 'playwright-execute') {
+        return {
+          ok: true,
+          status: 200,
+          data: { passed: true, total: 1, failed: 0, results: [{ title: 'Home', status: 'passed' }], source: 'playwright' } as never,
+        };
+      }
+      if (slug === 'playwright-locators') {
+        return { ok: true, status: 200, data: { locators: [], source: 'playwright' } as never };
+      }
+      const type = String((payload as { agentType?: string }).agentType ?? '');
+      const result = type === 'Test Case Generator'
+        ? { testCases: [{ id: 'TC-001', title: 'Home', type: 'functional', priority: 'medium', expectedOutcome: 'visible' }] }
+        : type === 'Playwright Automation'
+          ? 'import { test } from "@playwright/test";\ntest("Home", async ({ page }) => { await page.goto(""); });'
+          : type === 'Code Review'
+            ? { score: 8, issues: [] }
+            : type === 'Requirement Analysis'
+              ? { workItemId: '21', title: 'Home', qualityScore: 80, acceptanceCriteria: ['home'], businessObjective: 'Home' }
+              : { ok: true };
+      return { ok: true, status: 200, data: { result, llmUsage: { total_tokens: 4 } } as never };
+    };
+
+    const run = await executeWorkflow({
+      workflow: SAMPLE_WORKFLOW,
+      agents: AGENTS,
+      runtimeInput: '{"workItemId":21}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: {
+        isCancelled: () => false,
+        onNodeStatus: () => {},
+        waitForApproval: async () => true,
+      },
+    });
+
+    expect(JSON.parse(run.nodeExecutions.find((n) => n.nodeId === 'n9')?.output ?? '{}').reviewOk).toBe(true);
+    expect(JSON.parse(run.nodeExecutions.find((n) => n.nodeId === 'n9c')?.output ?? '{}').result).toBe(true);
+    expect(run.nodeExecutions.map((n) => n.nodeId)).not.toContain('n19');
+    expect(run.nodeExecutions.map((n) => n.nodeId)).toContain('n10');
+  });
+
+  it('grounds analysis and test data on the work item, not ADO upload errors', async () => {
+    const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
+    const prompts: Record<string, string> = {};
+    const uploads: Record<string, unknown>[] = [];
+    const invoke: InvokeFn = async (slug, payload) => {
+      if (slug === 'ado-retrieval') {
+        return { ok: false, status: 500, data: { error: 'offline' } as never };
+      }
+      if (slug === 'ado-upload') {
+        uploads.push(payload as Record<string, unknown>);
+        const cases = Array.isArray(payload.testCases) ? payload.testCases as { title?: string }[] : [];
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            succeeded: 0,
+            failed: cases.length,
+            results: cases.map((tc) => ({ title: tc.title, success: false, error: 'ADO create failed (401): PAT expired' })),
+          } as never,
+        };
+      }
+      if (slug === 'playwright-execute') {
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            passed: false,
+            total: 0,
+            failed: 0,
+            results: [],
+            source: 'playwright',
+            error: 'Failed to fetch dynamically imported module: file:///tmp/playwright.config.ts',
+          } as never,
+        };
+      }
+      if (slug === 'playwright-locators') {
+        expect(Array.isArray((payload as { paths?: string[] }).paths)).toBe(true);
+        expect((payload as { paths?: string[] }).paths).not.toContain('/register.htm');
+        return { ok: true, status: 200, data: { locators: ['page.locator("body")'], source: 'playwright' } as never };
+      }
+      const type = String((payload as { agentType?: string }).agentType ?? '');
+      prompts[type] = String((payload as { userPrompt?: string }).userPrompt ?? '');
+      const result = type === 'Playwright Automation'
+        ? 'import { test } from "@playwright/test";\ntest("Login", async ({ page }) => {\n  await page.goto("/login");\n  // Add login logic here\n});'
+        : type === 'Test Case Generator'
+          ? { testCases: [{ id: 'TC-001', title: 'Login', type: 'functional', priority: 'high', expectedOutcome: 'Welcome' }] }
+          : type === 'Test Data Generator'
+            ? { datasets: [{ scenarioId: 'TC-001', data: { username: 'ada' } }] }
+            : type === 'Code Review'
+              ? { score: 4, issues: ['placeholder'] }
+              : type === 'Defect Analysis'
+                ? { defectTitle: 'runner', severity: 'high', steps: [], passed: false }
+                : type === 'Requirement Analysis'
+                  ? { workItemId: '88', title: 'Login', qualityScore: 70, acceptanceCriteria: ['sign in'], businessObjective: 'Login' }
+                  : { ok: true };
+      return { ok: true, status: 200, data: { result, llmUsage: { total_tokens: 4 } } as never };
+    };
+
+    const run = await executeWorkflow({
+      workflow: SAMPLE_WORKFLOW,
+      agents: AGENTS,
+      runtimeInput: '{"workItemId":88,"baseUrl":"https://app.example.test"}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: {
+        isCancelled: () => false,
+        onNodeStatus: () => {},
+        waitForApproval: async () => true,
+      },
+    });
+
+    expect(JSON.parse(run.nodeExecutions.find((n) => n.nodeId === 'n2')?.output ?? '{}').normalized.title).toBe('Work item 88');
+    expect(prompts['Requirement Analysis']).toContain('Work item 88');
+    expect(prompts['Requirement Analysis']).not.toContain('Parabank Registration');
+    expect(prompts['Test Data Generator']).toContain('Login');
+    expect(prompts['Test Data Generator']).not.toMatch(/PAT expired|401/);
+    expect(prompts['Playwright Automation']).toContain('https://app.example.test');
+    expect(prompts['Playwright Automation']).toContain('Login');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n17')?.output).toContain('test("Login"');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n17')?.output).not.toContain('"expression"');
+    const lastUpload = uploads[uploads.length - 1];
+    expect(lastUpload.testCases).toEqual([]);
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n16')?.status).toBe('completed');
   });
 
   it('sends failing Playwright results to healing instead of inventing a pass', async () => {

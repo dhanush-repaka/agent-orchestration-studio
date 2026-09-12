@@ -16,6 +16,7 @@ export type AgentType =
   | 'Playwright Automation'
   | 'Code Generator'
   | 'Code Review'
+  | 'Code Change'
   | 'Requirement Analysis'
   | 'Test Data Generator'
   | 'Defect Analysis'
@@ -513,6 +514,7 @@ export const AGENT_PALETTE: NodePaletteItem[] = [
   { type: 'agent', label: 'Test Data Generator', kind: 'agent', icon: 'Database', agentType: 'Test Data Generator' },
   { type: 'agent', label: 'Playwright Automation', kind: 'agent', icon: 'MousePointerClick', agentType: 'Playwright Automation' },
   { type: 'agent', label: 'Code Review Agent', kind: 'agent', icon: 'GitPullRequest', agentType: 'Code Review' },
+  { type: 'agent', label: 'Code Change Agent', kind: 'agent', icon: 'Wrench', agentType: 'Code Change' },
   { type: 'agent', label: 'Defect Analysis', kind: 'agent', icon: 'Bug', agentType: 'Defect Analysis' },
   { type: 'agent', label: 'RCA Agent', kind: 'agent', icon: 'Activity', agentType: 'Root Cause Analysis' },
   { type: 'agent', label: 'Report Generator', kind: 'agent', icon: 'FileText', agentType: 'Report Generator' },
@@ -561,7 +563,7 @@ export const INTEGRATION_PALETTE: NodePaletteItem[] = [
 
 export const AGENT_TYPES: AgentType[] = [
   'Planner', 'Research', 'Data Retrieval', 'API', 'Test Case Generator', 'ADO Upload',
-  'Playwright Automation', 'Code Generator', 'Code Review', 'Requirement Analysis',
+  'Playwright Automation', 'Code Generator', 'Code Review', 'Code Change', 'Requirement Analysis',
   'Test Data Generator', 'Defect Analysis', 'Root Cause Analysis', 'Report Generator',
   'Approval', 'Human-in-the-Loop', 'Router', 'Decision', 'Validation', 'Notification', 'Custom',
 ];

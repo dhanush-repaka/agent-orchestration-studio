@@ -3,11 +3,19 @@ import {
   DEFAULT_PLAYWRIGHT_BASE_URL,
   PARABANK_REGISTRATION_TEST_CASES,
   alignSpecToTestCases,
+  buildExecutableSuiteFromCases,
   buildParabankSuiteFromCases,
+  classifyExecutableCase,
   buildPlaywrightHtmlReport,
   buildQeMarkdownReport,
   countPlaywrightTests,
+  applyDiscoveredLocators,
+  extractGotoPaths,
+  isBadCodeReview,
   extractPlaywrightSpec,
+  flattenPlaywrightListOutput,
+  modernizePlaywrightSpec,
+  specLooksUnimplemented,
   findLatestPlaywrightExecute,
   flattenPlaywrightJsonReport,
   looksLikePlaywrightSpec,
@@ -55,6 +63,113 @@ test("Successful User Login", async ({ page }) => {
     expect(next).toContain('rejected');
   });
 
+  it('rebuilds placeholder tests so every case gets a real body', () => {
+    const generated = `import { test } from "@playwright/test";
+test("Verify User Login with Valid Credentials", async ({ page }) => {
+  await page.goto("https://example.test");
+  // Add login logic here
+});`;
+    expect(specLooksUnimplemented(generated)).toBe(true);
+    const next = alignSpecToTestCases(generated, {
+      testCases: [
+        { title: 'Verify User Login with Valid Credentials', type: 'functional', expectedOutcome: 'Welcome' },
+        { title: 'Verify User Login with Invalid Credentials', type: 'negative', expectedOutcome: 'Error' },
+      ],
+    });
+    expect(countPlaywrightTests(next)).toBe(2);
+    expect(next).not.toContain('Add login logic here');
+    expect(next).toContain('Welcome');
+    expect(next).toContain('Invalid Credentials');
+  });
+
+  it('modernizes deprecated Playwright calls and maps discovered fields', () => {
+    const raw = `test("go", async ({ page }) => {
+  expect(await page.isVisible('text=Logo')).toBeTruthy();
+  await page.click('text=Register Link');
+  await page.fill('input[name="username"]', 'bob');
+  await page.fill('input[name="confirmPassword"]', 'x');
+  await page.click('text=Register');
+});`;
+    const next = applyDiscoveredLocators(modernizePlaywrightSpec(raw), [
+      'page.locator("[name=\\"customer.username\\"]")',
+      'page.locator("[name=\\"repeatedPassword\\"]")',
+    ]);
+    expect(next).toContain('page.locator(\'text=Logo\').isVisible()');
+    expect(next).toContain('getByRole("link", { name: "Register" })');
+    expect(next).toContain('getByRole("button", { name: "Register" })');
+    expect(next).toContain('customer.username');
+    expect(next).toContain('repeatedPassword');
+    expect(next).not.toContain('fill(\'bob\')');
+  });
+
+  it('parses Playwright list output when the JSON report is missing', () => {
+    const rows = flattenPlaywrightListOutput(`
+Running 2 tests using 1 worker
+  ✘  1 [chromium] › generated.spec.mjs:3:1 › Verify Home Page Display (1.2s)
+  ✘  2 [chromium] › generated.spec.mjs:3:1 › Verify Home Page Display (retry #1) (1.2s)
+  ✓  3 [chromium] › generated.spec.mjs:11:1 › Navigate to Registration Page (2.0s)
+`);
+    expect(rows).toEqual([
+      { title: 'Verify Home Page Display', status: 'failed' },
+      { title: 'Navigate to Registration Page', status: 'passed' },
+    ]);
+  });
+
+  it('reads navigation paths from a spec instead of a hardcoded app', () => {
+    expect(extractGotoPaths('await page.goto("/login"); await page.goto("https://app.test/home");')).toEqual([
+      '/login',
+      'https://app.test/home',
+    ]);
+    expect(extractGotoPaths('await page.goto(`${baseUrl}/register.htm`);')).toEqual(['/']);
+    expect(extractGotoPaths('await page.goto("https://parabank.parasoft.com/register");')).toEqual([
+      'register.htm',
+    ]);
+  });
+
+  it('builds a runnable suite from generated cases instead of invented assertions', () => {
+    const cases = [
+      { title: 'Verify Home Page Display', type: 'functional' },
+      { title: 'Check Registration Page Access', type: 'functional' },
+      { title: 'Submit Registration with Missing Mandatory Fields', type: 'negative' },
+      { title: 'Submit Registration with Valid Data', type: 'functional' },
+      { title: 'Security Test for Password Field', type: 'security' },
+    ];
+    expect(classifyExecutableCase(cases[0].title)).toBe('visible');
+    expect(classifyExecutableCase(cases[1].title, 'the page loads successfully')).toBe('navigate');
+    expect(classifyExecutableCase(cases[2].title, 'Enter valid data in all mandatory fields and submit')).toBe('required');
+    expect(classifyExecutableCase(cases[3].title, 'Enter valid data in all mandatory fields and submit')).toBe('submit');
+    expect(classifyExecutableCase(cases[4].title, 'the registration is successful')).toBe('negative');
+    const next = buildExecutableSuiteFromCases(cases, {
+      specHint: 'await page.goto(`${baseUrl}/register.htm`); await page.click(\'text=Register\');',
+    });
+    expect(countPlaywrightTests(next)).toBe(5);
+    expect(next).toContain('Verify Home Page Display');
+    expect(next).toContain('register.htm');
+    expect(next).toContain('getByRole("link"');
+    expect(next).toContain('Passw0rd!');
+    expect(next).not.toContain('Welcome John Doe');
+    expect(next).not.toContain('Email field is required');
+    expect(next).not.toContain('page.click(');
+    expect(next).not.toContain('https://parabank.parasoft.com/register"');
+  });
+
+  it('classifies by title so description words like successfully do not flip the kind', () => {
+    expect(classifyExecutableCase(
+      'Verify Registration Link Navigation',
+      'the registration page loads successfully',
+    )).toBe('navigate');
+    expect(classifyExecutableCase(
+      'Successful Registration with Valid Data',
+      'Enter valid data in all mandatory fields and submit',
+    )).toBe('submit');
+    expect(classifyExecutableCase(
+      'Validate Required Fields on Registration Page',
+      'All mandatory fields are present',
+    )).toBe('visible');
+    expect(isBadCodeReview({ score: 3, issues: [{ type: 'Unimplemented Test' }] })).toBe(true);
+    expect(isBadCodeReview({ score: 8, issues: [] })).toBe(false);
+  });
+
   it('keeps a generated spec that already has one test per case', () => {
     const generated = `import { test } from "@playwright/test";
 test("Open home", async ({ page }) => { await page.goto("/"); });
@@ -95,7 +210,8 @@ test("Open about", async ({ page }) => { await page.goto("/about"); });`;
     expect(rewriteSpecUrls('await page.goto("/register.htm");', DEFAULT_PLAYWRIGHT_BASE_URL)).toContain('/parabank/register.htm');
   });
 
-  it('resolves base URL from config, then workflow input', () => {
+  it('resolves base URL from workflow input, then node config', () => {
+    expect(resolvePlaywrightBaseUrl({ playwrightBaseUrl: 'https://hardcoded.test' }, { baseUrl: 'https://from-input.test/' })).toBe('https://from-input.test');
     expect(resolvePlaywrightBaseUrl({ playwrightBaseUrl: 'https://example.test/' }, {})).toBe('https://example.test');
     expect(resolvePlaywrightBaseUrl({}, { baseUrl: 'https://app.test' })).toBe('https://app.test');
     expect(resolvePlaywrightBaseUrl({}, {})).toBe(DEFAULT_PLAYWRIGHT_BASE_URL);

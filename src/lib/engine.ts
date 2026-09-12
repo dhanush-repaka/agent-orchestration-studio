@@ -6,13 +6,19 @@ import { evaluateCondition, getByPath, interpolate, parseJson, type InterpContex
 import { collectAdoAttachments, collectAdoRepoFiles } from './adoArtifacts';
 import { defaultAdoRepoName } from './adoGit';
 import {
-  alignSpecToTestCases,
+  buildExecutableSuiteFromCases,
   buildPlaywrightHtmlReport,
   buildQeMarkdownReport,
+  extractCodeReview,
+  extractGotoPaths,
   extractLocators,
+  extractUpstreamLocators,
   extractPlaywrightSpec,
   findLatestPlaywrightExecute,
+  isBadCodeReview,
+  isRunnerInfrastructureError,
   playwrightUnavailableResult,
+  resolveExecutableSpec,
   resolvePlaywrightBaseUrl,
   rewriteSpecUrls,
 } from './playwrightSpec';
@@ -198,21 +204,28 @@ function collectUpstream(currentId: string, workflow: Workflow, nodeOutputs: Rec
 }
 
 function extractAdoWorkItem(upstream: Record<string, unknown>, workflowInput: unknown): Record<string, unknown> | null {
+  let titled: Record<string, unknown> | null = null;
   for (const value of Object.values(upstream)) {
     if (!value || typeof value !== 'object') continue;
     const rec = value as Record<string, unknown>;
     if (rec.normalized && typeof rec.normalized === 'object') return rec.normalized as Record<string, unknown>;
-    if (rec.workItemType || rec.acceptanceCriteria || rec.title) return rec;
+    if (rec.workItemType || rec.fields || (rec.id != null && Array.isArray(rec.acceptanceCriteria))) {
+      return rec;
+    }
+    if (typeof rec.title === 'string' && rec.title && !titled) titled = rec;
   }
+  if (titled && (titled.workItemId != null || titled.id != null) && titled.qualityScore == null) return titled;
   if (workflowInput && typeof workflowInput === 'object') return workflowInput as Record<string, unknown>;
-  return null;
+  return titled;
 }
 
 function alreadyUploadedTestCases(upstream: Record<string, unknown>): boolean {
   for (const value of Object.values(upstream)) {
     if (!value || typeof value !== 'object') continue;
     const rec = value as Record<string, unknown>;
-    if (Number(rec.succeeded) > 0 && Array.isArray(rec.results)) return true;
+    if (!Array.isArray(rec.results) || !rec.results.length) continue;
+    const sample = rec.results[0];
+    if (sample && typeof sample === 'object' && 'success' in (sample as object)) return true;
   }
   return false;
 }
@@ -231,14 +244,20 @@ function extractTestCases(upstream: Record<string, unknown>): unknown[] | null {
     }
     if (typeof value !== 'object') return null;
     const rec = value as Record<string, unknown>;
-    for (const key of ['testCases', 'scenarios', 'cases', 'items']) {
+    for (const key of ['testCases', 'scenarios', 'cases']) {
       const inner = rec[key];
       const found = visit(inner);
       if (found) return found;
     }
     return null;
   };
-  for (const value of Object.values(upstream)) {
+  const preferredKeys = Object.keys(upstream).filter((key) => /test case|scenario|inputs/i.test(key));
+  for (const key of preferredKeys) {
+    const found = visit(upstream[key]);
+    if (found) return found;
+  }
+  for (const [key, value] of Object.entries(upstream)) {
+    if (/upload|publish|ado/i.test(key) && !/test case/i.test(key)) continue;
     const found = visit(value);
     if (found) return found;
   }
@@ -315,21 +334,19 @@ async function runAgentNode(
     const rec = workflowInput && typeof workflowInput === 'object' ? workflowInput as Record<string, unknown> : {};
     const fallback = {
       id: workItemId,
-      title: rec.title ?? 'Parabank Registration',
-      description: rec.description ?? 'Allow a new customer to register for Parabank online banking.',
-      state: rec.state ?? 'Active',
+      title: rec.title ?? `Work item ${workItemId}`,
+      description: rec.description
+        ?? 'Azure DevOps retrieval was unavailable. Use only the workflow input fields that were provided.',
+      state: rec.state ?? 'Unknown',
       assignedTo: rec.assignedTo ?? null,
-      workItemType: rec.workItemType ?? 'User Story',
-      acceptanceCriteria: rec.acceptanceCriteria ?? [
-        'Registration form accepts valid customer details',
-        'Duplicate usernames are rejected',
-        'A confirmation is shown after success',
-      ],
-      tags: rec.tags ?? ['parabank', 'qe'],
+      workItemType: rec.workItemType ?? 'Work Item',
+      acceptanceCriteria: Array.isArray(rec.acceptanceCriteria) ? rec.acceptanceCriteria : [],
+      tags: rec.tags ?? [],
       createdDate: null,
       changedDate: null,
+      retrievalError: String(data.error ?? 'ADO retrieval unavailable'),
     };
-    log('warning', 'tool', `ADO retrieval unavailable; using local work item ${fallback.id}`);
+    log('warning', 'tool', `ADO retrieval unavailable; using workflow input for work item ${fallback.id}`);
     return {
       output: JSON.stringify({ normalized: fallback, source: 'fallback' }, null, 2),
       tokens: 0,
@@ -363,10 +380,10 @@ async function runAgentNode(
       const failed = Number(data.failed ?? 0);
       if (failed > 0 && succeeded === 0) {
         const err = firstAdoAuthError(data) ?? 'ADO upload failed for every test case';
+        log('warning', 'tool', err);
         return {
-          output: JSON.stringify({ ...data, error: err }, null, 2),
+          output: JSON.stringify({ ...data, error: err, testCases }, null, 2),
           tokens: 0,
-          error: err,
           toolCalls: [{ tool: 'Azure DevOps', result: err }],
         };
       }
@@ -408,18 +425,91 @@ async function runAgentNode(
     workflowInput,
   };
 
+  if (agent.type === 'Requirement Analysis') {
+    const workItem = extractAdoWorkItem(upstream, workflowInput);
+    payload.userPrompt = `Analyze the retrieved work item and extract structured requirements. Use this work item as the source of truth. Do not invent a different product or page. Return JSON with workItemId, title, businessObjective, acceptanceCriteria (array), functionalRequirements (array), gaps (array), and qualityScore (0-100).\n\nWork item:\n${stringifyOutput(workItem ?? workflowInput)}\n\nWorkflow input:\n${stringifyOutput(workflowInput)}`;
+  }
+  if (agent.type === 'Test Case Generator') {
+    const workItem = extractAdoWorkItem(upstream, workflowInput);
+    payload.userPrompt = `Generate automatable test cases from this work item and any upstream analysis. The number of cases should match the work item, not a fixed count.\n\nWork item:\n${stringifyOutput(workItem ?? workflowInput)}\n\nUpstream analysis:\n${stringifyOutput(resolvedInputs)}\n\nPrevious node:\n${stringifyOutput(ctx.previousOutput)}`;
+  }
   if (agent.type === 'Playwright Automation') {
+    const execute = findLatestPlaywrightExecute(nodeOutputs);
+    const healing = /heal/i.test(`${node.data.label} ${agent.displayName}`);
+    if (healing && isRunnerInfrastructureError(execute?.error)) {
+      const spec = extractPlaywrightSpec(stringifyOutput(ctx.previousOutput), upstream);
+      if (spec) {
+        log('warning', 'agent', 'Playwright runner failed before tests executed; keeping the generated spec');
+        return { output: spec, tokens: 0, model: 'passthrough' };
+      }
+    }
+    if (healing) {
+      const healCases = extractTestCases({ inputs: resolvedInputs, ...upstream });
+      if (healCases?.length) {
+        const specHint = extractPlaywrightSpec(stringifyOutput(ctx.previousOutput), upstream);
+        log('info', 'agent', `Rebuilding ${healCases.length} Playwright test(s) from generated cases`);
+        return {
+          output: buildExecutableSuiteFromCases(healCases as Array<{ title?: string; type?: string; description?: string; expectedOutcome?: string }>, {
+            specHint,
+            locators: extractUpstreamLocators(upstream),
+          }),
+          tokens: 0,
+          model: 'executable-suite',
+        };
+      }
+    }
     const baseUrl = resolvePlaywrightBaseUrl(cfg, workflowInput);
-    const cases = extractTestCases({ ...upstream, inputs: resolvedInputs });
-    payload.userPrompt = `${payload.userPrompt ?? ''}\n\nTarget application base URL: ${baseUrl}\nUse page.goto with paths from the test cases or this base URL. Return ONLY TypeScript for @playwright/test.`;
+    const cases = extractTestCases({ inputs: resolvedInputs, ...upstream });
+    payload.userPrompt = `${payload.userPrompt ?? ''}\n\nTarget application base URL: ${baseUrl}\nUse page.goto with paths from the test cases or this base URL. Return ONLY TypeScript for @playwright/test. Implement real locators, fills, clicks, and assertions. Do not leave TODO or "add logic here" comments.`;
     if (cases?.length) {
       payload.userPrompt = `${payload.userPrompt}\n\nAuthoritative test cases (${cases.length}). Emit exactly one test() per case and use that case title as the test name. Do not add extra tests or drop cases.\n${JSON.stringify(cases)}`;
     }
   }
   if (agent.type === 'Test Data Generator') {
-    const cases = extractTestCases(upstream);
+    const cases = extractTestCases({ inputs: resolvedInputs, ...upstream });
     if (cases?.length) {
-      payload.userPrompt = `${payload.userPrompt ?? ''}\n\nAuthoritative test cases (generate data for these only; ignore ADO upload errors):\n${JSON.stringify(cases)}`;
+      payload.userPrompt = `Generate realistic test data for these test cases only. Return JSON { "datasets": [{ "scenarioId", "data" }] }. Ignore Azure DevOps upload or credential errors.\n\n${JSON.stringify(cases)}`;
+    }
+  }
+  if (agent.type === 'Code Change') {
+    const review = extractCodeReview({ ...upstream, inputs: resolvedInputs, previous: parseMaybeJson(stringifyOutput(ctx.previousOutput)) });
+    const specHint = extractPlaywrightSpec(stringifyOutput(ctx.previousOutput), upstream);
+    const changeCases = extractTestCases({ inputs: resolvedInputs, ...upstream });
+    if (isBadCodeReview(review) && changeCases?.length) {
+      log('warning', 'agent', `Code review score ${review?.score ?? '?'}; rewriting the Playwright spec`);
+      return {
+        output: buildExecutableSuiteFromCases(changeCases as Array<{ title?: string; type?: string; description?: string; expectedOutcome?: string }>, {
+          specHint,
+          locators: extractUpstreamLocators(upstream),
+        }),
+        tokens: 0,
+        model: 'code-change',
+      };
+    }
+    if (specHint) {
+      log('info', 'agent', 'Code review is acceptable; keeping the current spec');
+      return { output: specHint, tokens: 0, model: 'passthrough' };
+    }
+  }
+  if (agent.type === 'Code Review') {
+    const spec = extractPlaywrightSpec(stringifyOutput(ctx.previousOutput), { ...upstream, inputs: resolvedInputs });
+    const locators = extractUpstreamLocators(upstream);
+    if (spec) {
+      payload.userPrompt = `Review this Playwright spec. page.goto("") is valid when Playwright baseURL is set. Flag invented text locators, 404 paths such as /register instead of register.htm, unimplemented tests, and missing assertions. Return JSON { score (0-10), issues: [{ type, description }], recommendation }.\n\nSpec:\n${spec}\n\nDiscovered locators:\n${JSON.stringify(locators)}`;
+    }
+  }
+  if (agent.type === 'Defect Analysis') {
+    const execute = findLatestPlaywrightExecute(nodeOutputs);
+    if (execute) {
+      payload.userPrompt = `Analyze these Playwright results. If tests timed out, inspect spec URLs and locators first. Do not blame performance when the page is 404 or a locator is missing.\n\n${JSON.stringify({
+        passed: execute.passed,
+        total: execute.total,
+        failed: execute.failed,
+        results: execute.results,
+        baseUrl: execute.baseUrl,
+        error: execute.error,
+        spec: typeof execute.spec === 'string' ? execute.spec.slice(0, 4000) : undefined,
+      })}`;
     }
   }
   if (agent.type === 'Report Generator') {
@@ -441,8 +531,21 @@ async function runAgentNode(
     return { output: JSON.stringify({ error: err }, null, 2), tokens: 0, error: err, model: agent.modelName };
   }
   const result = data.result ?? data;
+  let output = stringifyOutput(result);
+  if (agent.type === 'Code Review') {
+    const rec = result && typeof result === 'object' && !Array.isArray(result)
+      ? result as Record<string, unknown>
+      : {};
+    output = JSON.stringify({
+      ...rec,
+      reviewOk: !isBadCodeReview({
+        score: Number(rec.score),
+        issues: Array.isArray(rec.issues) ? rec.issues : [],
+      }),
+    }, null, 2);
+  }
   return {
-    output: stringifyOutput(result),
+    output,
     tokens: data.llmUsage?.total_tokens ?? 0,
     model: data.model ?? `${agent.modelProvider} / ${agent.modelName}`,
     toolCalls: enabledTools.map((t) => ({ tool: t.name, result: 'available' })),
@@ -641,10 +744,9 @@ export async function executeWorkflow(opts: {
               ? 'execute'
               : 'locators');
           const upstream = collectUpstream(currentId, wf, nodeOutputs, nodes, agentMap);
-          const spec = alignSpecToTestCases(
-            extractPlaywrightSpec(predOut, { ...upstream, previous: parseMaybeJson(predOut) }),
-            { workflowInput, upstream },
-          );
+          const extracted = extractPlaywrightSpec(predOut, { ...upstream, previous: parseMaybeJson(predOut) });
+          const locators = extractUpstreamLocators(upstream);
+          const spec = resolveExecutableSpec(extracted, { workflowInput, upstream, previous: parseMaybeJson(predOut) }, locators);
           const baseUrl = resolvePlaywrightBaseUrl(cfg, workflowInput);
           if (action === 'execute') {
             if (!spec) {
@@ -659,6 +761,7 @@ export async function executeWorkflow(opts: {
             const { ok, data } = await invoke<Record<string, unknown>>('playwright-execute', {
               spec: rewriteSpecUrls(spec, baseUrl),
               baseUrl,
+              locators,
               timeoutSec: cfg.timeoutSec,
             });
             const unavailable = data.source === 'unavailable'
@@ -694,18 +797,18 @@ export async function executeWorkflow(opts: {
             const { ok, data } = await invoke<Record<string, unknown>>('playwright-locators', {
               baseUrl,
               spec,
-              paths: ['/', '/register.htm'],
+              paths: extractGotoPaths(spec || predOut),
             });
             const live = ok && Array.isArray(data.locators) ? data.locators.map(String) : [];
-            const locators = [...new Set([...fromSpec, ...live])];
+            const discovered = live.length ? live : fromSpec;
             output = JSON.stringify({
-              locators: locators.length ? locators : ['page.locator("body")'],
+              locators: discovered.length ? discovered : ['page.locator("body")'],
               source: live.length ? 'playwright' : 'playwright-mcp',
               spec: spec || predOut,
               baseUrl,
               pages: data.pages ?? null,
             }, null, 2);
-            addLog('info', 'tool', `Discovered ${locators.length || 1} locator(s)`, currentId);
+            addLog('info', 'tool', `Discovered ${discovered.length || 1} locator(s)`, currentId);
           }
           toolCalls = [{ tool: 'Playwright', result: action }];
           break;

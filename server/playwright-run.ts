@@ -4,9 +4,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   DEFAULT_PLAYWRIGHT_BASE_URL,
+  applyDiscoveredLocators,
   buildPlaywrightHtmlReport,
-  flattenPlaywrightJsonReport,
+  countPlaywrightTests,
+  modernizePlaywrightSpec,
+  normalizeGotoPath,
   rewriteSpecUrls,
+  summarizePlaywrightOutput,
 } from '../src/lib/playwrightSpec';
 
 export type RunnerResult = { status: number; body: Record<string, unknown> };
@@ -33,15 +37,18 @@ async function resolveChrome(): Promise<ChromeLaunch> {
 
 function runCommand(command: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolveRun) => {
+    const env = {
+      ...process.env,
+      CI: '1',
+      NO_COLOR: '1',
+      PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || (onLambda() ? undefined : '0'),
+      PLAYWRIGHT_CHROMIUM_USE_HEADLESS_SHELL: '0',
+      NODE_PATH: [resolve(process.cwd(), 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(':'),
+    };
+    delete env.FORCE_COLOR;
     const child = spawn(command, args, {
       cwd,
-      env: {
-        ...process.env,
-        CI: '1',
-        PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || (onLambda() ? undefined : '0'),
-        PLAYWRIGHT_CHROMIUM_USE_HEADLESS_SHELL: '0',
-        NODE_PATH: [resolve(process.cwd(), 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(':'),
-      },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -49,7 +56,8 @@ function runCommand(command: string, args: string[], cwd: string, timeoutMs: num
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });
     child.stderr.on('data', (chunk) => { stderr += String(chunk); });
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 2000);
     }, timeoutMs);
     child.on('close', (code) => {
       clearTimeout(timer);
@@ -62,18 +70,14 @@ function runCommand(command: string, args: string[], cwd: string, timeoutMs: num
   });
 }
 
-function writeRunnerFiles(dir: string, spec: string, baseUrl: string, timeoutSec: number, chrome: ChromeLaunch) {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'generated.spec.ts'), rewriteSpecUrls(spec, baseUrl), 'utf8');
-  writeFileSync(join(dir, 'playwright.config.ts'), `
-import { defineConfig } from '@playwright/test';
-
-export default defineConfig({
+export function buildPlaywrightRunnerConfig(baseUrl: string, chrome: ChromeLaunch): string {
+  const lambda = onLambda();
+  return `export default {
   testDir: '.',
-  testMatch: 'generated.spec.ts',
+  testMatch: /generated\\.spec\\.(mjs|js|ts)/,
   outputDir: './test-results',
-  timeout: ${onLambda() ? 12000 : 30000},
-  retries: ${onLambda() ? 0 : 1},
+  timeout: ${lambda ? 12000 : 15000},
+  retries: 0,
   workers: 1,
   fullyParallel: false,
   reporter: [['json', { outputFile: 'results.json' }], ['list']],
@@ -89,15 +93,24 @@ export default defineConfig({
     },
   },
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
-});
-`, 'utf8');
+};
+`;
+}
+
+function writeRunnerFiles(dir: string, spec: string, baseUrl: string, timeoutSec: number, chrome: ChromeLaunch) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module', private: true }), 'utf8');
+  writeFileSync(join(dir, 'generated.spec.mjs'), rewriteSpecUrls(spec, baseUrl), 'utf8');
+  writeFileSync(join(dir, 'playwright.config.mjs'), buildPlaywrightRunnerConfig(baseUrl, chrome), 'utf8');
 }
 
 export async function executeSpec(body: Record<string, unknown>): Promise<RunnerResult> {
-  const spec = typeof body.spec === 'string' ? body.spec.trim() : '';
+  let spec = typeof body.spec === 'string' ? body.spec.trim() : '';
   if (!spec) {
     return { status: 400, body: { error: 'Playwright spec is required', passed: false, source: 'unavailable' } };
   }
+  spec = modernizePlaywrightSpec(spec);
+  if (Array.isArray(body.locators)) spec = applyDiscoveredLocators(spec, body.locators.map(String));
   if (/\b(?:child_process|node:child_process|node:fs|fs\.unlink|fs\.rm)\b/.test(spec)) {
     return { status: 400, body: { error: 'Spec uses disallowed Node APIs', passed: false, source: 'unavailable' } };
   }
@@ -114,9 +127,10 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
   }
   const baseUrl = String(body.baseUrl || DEFAULT_PLAYWRIGHT_BASE_URL).replace(/\/$/, '');
   const lambda = onLambda();
+  const testCount = Math.max(1, countPlaywrightTests(spec));
   const timeoutSec = lambda
     ? Math.min(18, Math.max(10, Number(body.timeoutSec) || 18))
-    : Math.min(240, Math.max(30, Number(body.timeoutSec) || 90));
+    : Math.min(240, Math.max(90, Number(body.timeoutSec) || testCount * 20));
   const root = lambda ? tmpdir() : join(process.cwd(), '.aos-runs');
   const dir = join(root, `pw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const started = Date.now();
@@ -125,8 +139,8 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
   try {
     const ran = await runCommand(
       process.execPath,
-      [cli, 'test', `--config=${join(dir, 'playwright.config.ts')}`],
-      process.cwd(),
+      [cli, 'test', '--config=playwright.config.mjs'],
+      dir,
       lambda ? 22000 : (timeoutSec + 20) * 1000,
     );
     const resultsPath = join(dir, 'results.json');
@@ -138,31 +152,14 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
         report = null;
       }
     }
-    const summary = flattenPlaywrightJsonReport(report);
+    const summary = summarizePlaywrightOutput(report, ran.stdout, ran.stderr);
     const missingBrowser = /Executable doesn't exist|browserType\.launch/i.test(`${ran.stdout}\n${ran.stderr}`);
-    if (summary.total === 0 && (ran.code !== 0 || missingBrowser)) {
-      const body = {
-        passed: false,
-        total: 0,
-        failed: 0,
-        results: [],
-        source: missingBrowser ? 'unavailable' : 'playwright',
-        error: missingBrowser
-          ? 'Playwright Chromium is not installed on the host.'
-          : (ran.stderr || ran.stdout || 'Playwright produced no results').slice(0, 4000),
-        stdout: ran.stdout.slice(-4000),
-        durationMs: Date.now() - started,
-        baseUrl,
-        spec,
-      };
-      return {
-        status: missingBrowser ? 500 : 200,
-        body: { ...body, htmlReport: buildPlaywrightHtmlReport(body) },
-      };
-    }
     const body = {
       ...summary,
-      source: 'playwright',
+      source: missingBrowser ? 'unavailable' : 'playwright',
+      error: missingBrowser
+        ? 'Playwright Chromium is not installed on the host.'
+        : summary.error,
       stdout: ran.stdout.slice(-4000),
       stderr: ran.stderr.slice(-2000),
       durationMs: Date.now() - started,
@@ -170,7 +167,7 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
       spec,
     };
     return {
-      status: 200,
+      status: missingBrowser ? 500 : 200,
       body: { ...body, htmlReport: buildPlaywrightHtmlReport(body) },
     };
   } finally {
@@ -180,9 +177,15 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
 
 export async function discoverLocators(body: Record<string, unknown>): Promise<RunnerResult> {
   const baseUrl = String(body.baseUrl || DEFAULT_PLAYWRIGHT_BASE_URL).replace(/\/$/, '');
-  const paths = Array.isArray(body.paths) && body.paths.length
-    ? body.paths.map((p) => String(p))
-    : ['/', '/register.htm'];
+  const paths = (Array.isArray(body.paths) && body.paths.length
+    ? body.paths.map((p) => normalizeGotoPath(String(p)))
+    : ['/']
+  ).filter(Boolean);
+  const scan = paths.length ? paths : ['/'];
+  const specHint = typeof body.spec === 'string' ? body.spec : '';
+  if (/regist|sign[- ]?up/i.test(specHint) && !scan.some((path) => /regist|\.html?/i.test(path))) {
+    scan.push('register.htm');
+  }
   const chrome = await resolveChrome();
   const { chromium } = onLambda()
     ? await import('playwright-core')
@@ -196,11 +199,13 @@ export async function discoverLocators(body: Record<string, unknown>): Promise<R
     const page = await browser.newPage();
     const locators: string[] = [];
     const pages: { path: string; title: string }[] = [];
-    for (const path of paths.slice(0, 4)) {
+    for (const path of scan.slice(0, 4)) {
       const url = path.startsWith('http') ? path : `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
       try {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        pages.push({ path, title: await page.title() });
+        const title = await page.title();
+        if (/404|not found/i.test(title)) continue;
+        pages.push({ path, title });
         const found = await page.evaluate(() => {
           const out: string[] = [];
           const seen = new Set<string>();

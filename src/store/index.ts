@@ -985,6 +985,7 @@ export const useStore = create<AppState>((set, get) => ({
         if (
           (w.id === USER_STORY_WORKFLOW_ID && needsUserStoryUpgrade(w))
           || next !== merged
+          || (w.id === USER_STORY_WORKFLOW_ID && needsUserStoryUpgrade(next) === false && needsUserStoryUpgrade(w))
         ) persistUpgrades.push(next);
         byId.set(w.id, { ...next, edges: sanitizeWorkflowGraph(next.nodes ?? [], next.edges ?? []) });
       }

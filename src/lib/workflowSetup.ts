@@ -71,13 +71,97 @@ export function applyDefaultPlaywrightSettings(wf: Workflow): Workflow {
 }
 
 export function applyStudioDefaults(wf: Workflow): Workflow {
-  return applyDefaultPlaywrightSettings(applyDefaultAdoSettings(wf));
+  return ensureCodeChangeLinked(applyDefaultPlaywrightSettings(applyDefaultAdoSettings(wf)));
+}
+
+export function codeChangeIsLinked(wf: Workflow): boolean {
+  const hasCond = wf.nodes.some((n) => n.id === 'n9c' && n.data.nodeType === 'condition');
+  const hasChange = wf.nodes.some((n) => n.id === 'n19');
+  const reviewToCond = wf.edges.some((e) => e.source === 'n9' && e.target === 'n9c');
+  const goodToExec = wf.edges.some((e) => e.source === 'n9c' && e.target === 'n10' && e.sourceHandle === 'out-true');
+  const badToChange = wf.edges.some((e) => e.source === 'n9c' && e.target === 'n19' && e.sourceHandle === 'out-false');
+  const changeToExec = wf.edges.some((e) => e.source === 'n19' && e.target === 'n10');
+  const reviewToChange = wf.edges.some((e) => e.source === 'n9' && e.target === 'n19');
+  const reviewToExec = wf.edges.some((e) => e.source === 'n9' && e.target === 'n10');
+  return hasCond && hasChange && reviewToCond && goodToExec && badToChange && changeToExec && !reviewToChange && !reviewToExec;
+}
+
+export function ensureCodeChangeLinked(wf: Workflow): Workflow {
+  if (wf.id !== USER_STORY_WORKFLOW_ID) return wf;
+  if (codeChangeIsLinked(wf)) return wf;
+
+  const review = wf.nodes.find((n) => n.id === 'n9');
+  const exec = wf.nodes.find((n) => n.id === 'n10');
+  if (!review || !exec) return wf;
+
+  const condX = review.position.x + 220;
+  const condY = review.position.y;
+  const shift = exec.position.x < condX + 200 ? 220 : 0;
+  const reviewOk: WorkflowNode = {
+    id: 'n9c',
+    type: 'studioNode',
+    position: { x: condX, y: condY },
+    data: {
+      kind: 'control',
+      nodeType: 'condition',
+      label: 'Review OK?',
+      status: 'ready',
+      config: {
+        timeoutSec: 15,
+        retryCount: 0,
+        loggingLevel: 'info',
+        expression: '{{nodes.n9.reviewOk}}',
+      },
+    },
+  };
+  const codeChange: WorkflowNode = {
+    id: 'n19',
+    type: 'studioNode',
+    position: { x: condX, y: condY + 220 },
+    data: {
+      kind: 'agent',
+      nodeType: 'Code Change',
+      label: 'Code Change',
+      agentId: 'a11',
+      agentType: 'Code Change',
+      icon: 'Wrench',
+      status: 'ready',
+      config: {
+        timeoutSec: 60,
+        retryCount: 1,
+        loggingLevel: 'info',
+        inputBindings: [{ inputName: 'review', source: 'node', nodeId: 'n9', path: 'output' }],
+      },
+    },
+  };
+
+  const nodes = [
+    ...wf.nodes.filter((n) => n.id !== 'n19' && n.id !== 'n9c').map((n) => (
+      shift && n.position.x >= condX
+        ? { ...n, position: { ...n.position, x: n.position.x + shift } }
+        : n
+    )),
+    reviewOk,
+    codeChange,
+  ];
+  const edges = [
+    ...wf.edges.filter((e) => (
+      e.source !== 'n9c' && e.target !== 'n9c'
+      && e.source !== 'n19' && e.target !== 'n19'
+      && !(e.source === 'n9' && e.target === 'n10')
+    )),
+    { id: 'e9c', source: 'n9', target: 'n9c', animated: false },
+    { id: 'e9t', source: 'n9c', target: 'n10', label: 'good review', sourceHandle: 'out-true' },
+    { id: 'e9f', source: 'n9c', target: 'n19', label: 'bad review', sourceHandle: 'out-false' },
+    { id: 'e10', source: 'n19', target: 'n10', label: 'revised spec', animated: false },
+  ];
+  return { ...wf, nodes, edges, updatedAt: new Date().toISOString() };
 }
 
 export function needsUserStoryUpgrade(wf: Workflow): boolean {
   if (wf.id !== USER_STORY_WORKFLOW_ID) return false;
   const byId = new Map(wf.nodes.map((n) => [n.id, n]));
-  if (!byId.has('n3') || !byId.has('n18')) return true;
+  if (!byId.has('n3') || !byId.has('n18') || !codeChangeIsLinked(wf)) return true;
   return wf.nodes.some((n) => (
     n.data.status === 'not-configured'
     || (n.data.kind === 'agent' && !n.data.agentId)

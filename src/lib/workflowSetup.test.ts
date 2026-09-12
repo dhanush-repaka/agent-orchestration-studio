@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SAMPLE_WORKFLOW } from '@/data/mock';
-import { applyDefaultAdoSettings, applyStudioDefaults, DEFAULT_ADO_ORG, DEFAULT_PLAYWRIGHT_BASE_URL, mergeUserStoryWorkflow, needsUserStoryUpgrade } from '@/lib/workflowSetup';
+import { applyDefaultAdoSettings, applyStudioDefaults, codeChangeIsLinked, DEFAULT_ADO_ORG, DEFAULT_PLAYWRIGHT_BASE_URL, ensureCodeChangeLinked, mergeUserStoryWorkflow, needsUserStoryUpgrade } from '@/lib/workflowSetup';
 
 describe('user story workflow setup', () => {
   it('treats the seed graph as already configured', () => {
@@ -49,5 +49,28 @@ describe('user story workflow setup', () => {
     const next = applyStudioDefaults(stripped);
     expect((next.nodes.find((n) => n.id === 'n10')?.data.config as { playwrightBaseUrl?: string }).playwrightBaseUrl).toBe(DEFAULT_PLAYWRIGHT_BASE_URL);
     expect(next.defaultInput).toContain(DEFAULT_PLAYWRIGHT_BASE_URL);
+  });
+
+  it('wires Code Change between Code Review and Execute on a saved graph', () => {
+    const stale = {
+      ...SAMPLE_WORKFLOW,
+      nodes: SAMPLE_WORKFLOW.nodes.filter((n) => n.id !== 'n19'),
+      edges: [
+        ...SAMPLE_WORKFLOW.edges.filter((e) => e.source !== 'n19' && e.target !== 'n19' && e.id !== 'e9b' && e.id !== 'e10'),
+        { id: 'e10', source: 'n9', target: 'n10', animated: false },
+      ],
+    };
+    expect(codeChangeIsLinked(stale)).toBe(false);
+    expect(needsUserStoryUpgrade(stale)).toBe(true);
+    const next = ensureCodeChangeLinked(stale);
+    expect(codeChangeIsLinked(next)).toBe(true);
+    expect(next.nodes.some((n) => n.id === 'n9c' && n.data.nodeType === 'condition')).toBe(true);
+    expect(next.edges.some((e) => e.source === 'n9c' && e.target === 'n10' && e.sourceHandle === 'out-true')).toBe(true);
+    expect(next.edges.some((e) => e.source === 'n9c' && e.target === 'n19' && e.sourceHandle === 'out-false')).toBe(true);
+    expect(next.edges.some((e) => e.source === 'n9' && e.target === 'n10')).toBe(false);
+    expect(next.edges.some((e) => e.source === 'n9' && e.target === 'n19')).toBe(false);
+    expect(next.nodes.find((n) => n.id === 'n19')?.position.y).toBeGreaterThan(
+      next.nodes.find((n) => n.id === 'n9c')?.position.y ?? 0,
+    );
   });
 });

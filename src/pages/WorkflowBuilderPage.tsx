@@ -13,6 +13,7 @@ import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import { NodeInspector, WorkflowSettingsPanel, defaultNodeConfig } from '@/components/NodeInspector';
 import { sanitizeEdges } from '@/lib/graph';
+import { applyStudioDefaults, codeChangeIsLinked, USER_STORY_WORKFLOW_ID } from '@/lib/workflowSetup';
 import {
   CONTROL_PALETTE, DATA_PALETTE, INTEGRATION_PALETTE,
   type WorkflowNodeData, type NodeKind, type WorkflowNode, type WorkflowEdge,
@@ -42,6 +43,7 @@ const AGENT_ICONS: Record<string, string> = {
   'Test Data Generator': 'Database',
   'Playwright Automation': 'MousePointerClick',
   'Code Review': 'GitPullRequest',
+  'Code Change': 'Wrench',
   'Defect Analysis': 'Bug',
   'Report Generator': 'FileText',
   'Data Retrieval': 'Boxes',
@@ -81,6 +83,9 @@ function BuilderInner() {
   const { screenToFlowPosition } = useReactFlow();
 
   const wf = workflows.find((w) => w.id === selectedWorkflowId) ?? workflows[0];
+  const graphKey = wf
+    ? `${wf.id}:${wf.updatedAt}:${wf.nodes.map((n) => n.id).join(',')}:${wf.edges.map((e) => `${e.source}->${e.target}`).join(',')}`
+    : '';
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(wf?.nodes as unknown as Node[] ?? []);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(wf?.edges as unknown as Edge[] ?? []);
@@ -99,6 +104,12 @@ function BuilderInner() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    if (!wf || wf.id !== USER_STORY_WORKFLOW_ID || codeChangeIsLinked(wf)) return;
+    const next = applyStudioDefaults(wf);
+    setWorkflowGraph(wf.id, next.nodes, next.edges);
+  }, [wf, setWorkflowGraph]);
+
   // Sync nodes/edges when workflow changes
   useEffect(() => {
     if (wf) {
@@ -115,7 +126,7 @@ function BuilderInner() {
       });
       setConfigs(cfgs);
     }
-  }, [wf?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [graphKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Update node status during and after a run
   useEffect(() => {

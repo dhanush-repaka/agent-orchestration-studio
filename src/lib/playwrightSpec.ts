@@ -232,19 +232,19 @@ export function stripCodeFences(value: string): string {
 export function looksLikePlaywrightSpec(value: unknown): string | null {
   if (typeof value === 'string') {
     const stripped = stripCodeFences(value);
+    const parsed = tryParseJson(stripped);
+    if (parsed != null && typeof parsed === 'object') return looksLikePlaywrightSpec(parsed);
     if (
       /@playwright\/test/.test(stripped)
       || (/\btest\s*(?:\.describe)?\s*\(/.test(stripped) && /\bpage\./.test(stripped))
     ) {
       return stripped;
     }
-    const parsed = tryParseJson(stripped);
-    if (parsed != null) return looksLikePlaywrightSpec(parsed);
     return null;
   }
   if (!value || typeof value !== 'object') return null;
   const rec = value as Record<string, unknown>;
-  for (const key of ['spec', 'code', 'source', 'healed', 'file']) {
+  for (const key of ['spec', 'code', 'source', 'healed', 'file', 'execute']) {
     const inner = looksLikePlaywrightSpec(rec[key]);
     if (inner) return inner;
   }
@@ -293,7 +293,7 @@ export function rewriteSpecUrls(spec: string, baseUrl: string): string {
 }
 
 export function countPlaywrightTests(spec: string): number {
-  return [...spec.matchAll(/\btest\s*\(\s*(?!describe\b)/g)].length;
+  return extractPlaywrightTests(spec).length;
 }
 
 export function extractPlaywrightTests(spec: string): Array<{ title: string; body: string }> {
@@ -316,8 +316,241 @@ export function extractPlaywrightTests(spec: string): Array<{ title: string; bod
   return tests;
 }
 
+export function isPlaceholderTestBody(body: string): boolean {
+  if (/add .+ (logic|code|implementation) here|todo\b|not implemented|placeholder/i.test(body)) return true;
+  return !/\bpage\.(goto|locator|getByRole|getByLabel|getByText|getByPlaceholder|getByTestId|fill|click|check|type|press|selectOption)\s*\(/.test(body);
+}
+
+export function specLooksUnimplemented(spec: string): boolean {
+  const tests = extractPlaywrightTests(spec);
+  if (!tests.length) return /add .+ (logic|code) here|todo\b|not implemented/i.test(spec);
+  return tests.every((test) => isPlaceholderTestBody(test.body));
+}
+
+export function isRunnerInfrastructureError(error: unknown): boolean {
+  const blob = String(error ?? '');
+  return /failed to fetch dynamically imported module|playwright\.config\.|runner is not available|runner timed out|source": "unavailable"|chromium is not installed/i.test(blob);
+}
+
+export function normalizeGotoPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed || trimmed.includes('${') || /baseUrl/i.test(trimmed)) return '';
+  if (/^https?:\/\/[^/]+\/register\/?$/i.test(trimmed) && !/\.html?$/i.test(trimmed)) return 'register.htm';
+  if (/^\/?register\/?$/i.test(trimmed) && !/\.html?$/i.test(trimmed)) return 'register.htm';
+  return trimmed;
+}
+
+export function extractGotoPaths(spec: string): string[] {
+  const found = new Set<string>();
+  const re = /page\.goto\(\s*(['"`])([^'"`]+)\1/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(spec))) {
+    const path = normalizeGotoPath(match[2]);
+    if (path) found.add(path);
+    if (found.size >= 4) break;
+  }
+  return found.size ? [...found] : ['/'];
+}
+
+export function extractDiscoveredFieldNames(locators: string[]): string[] {
+  const names = new Set<string>();
+  for (const locator of locators) {
+    const decoded = locator.replace(/\\"/g, '"').replace(/\\'/g, "'");
+    for (const match of decoded.matchAll(/name=["']([A-Za-z0-9._-]+)/g)) {
+      names.add(match[1]);
+    }
+  }
+  return [...names];
+}
+
+const FIELD_ALIASES: Record<string, string[]> = {
+  confirmPassword: ['repeatedPassword', 'passwordConfirm', 'confirm_password'],
+  confirmpassword: ['repeatedPassword'],
+  address: ['customer.address.street', 'street'],
+};
+
+function resolveDiscoveredName(requested: string, discovered: string[]): string {
+  if (discovered.includes(requested)) return requested;
+  const aliases = FIELD_ALIASES[requested] ?? FIELD_ALIASES[requested.toLowerCase()] ?? [];
+  for (const alias of aliases) {
+    if (discovered.includes(alias)) return alias;
+  }
+  const suffix = discovered.find((name) => name === requested || name.endsWith(`.${requested}`));
+  return suffix ?? requested;
+}
+
+export function applyDiscoveredLocators(spec: string, locators: string[] = []): string {
+  const discovered = extractDiscoveredFieldNames(locators);
+  let next = spec.replace(/\[name=(["'])([^"']+)\1\]/g, (full, quote: string, name: string) => {
+    const resolved = resolveDiscoveredName(name, discovered);
+    return `[name=${quote}${resolved}${quote}]`;
+  });
+  next = next.replace(/input\[name=(["'])([^"']+)\1\]/g, (_full, quote: string, name: string) => (
+    `[name=${quote}${resolveDiscoveredName(name, discovered)}${quote}]`
+  ));
+  if (discovered.some((name) => /user.?name$/i.test(name))) {
+    next = next.replace(
+      /(\[name=(["'])[^"']*username\2\]['"`]\s*,\s*)(['"])[^'"]+\3/gi,
+      `$1\`u\${Math.random().toString(36).slice(2, 9)}\``,
+    );
+  }
+  return next;
+}
+
+export function modernizePlaywrightSpec(spec: string): string {
+  return spec
+    .replace(/page\.isVisible\((['"`])([^'"`]+)\1\)/g, 'page.locator($1$2$1).isVisible()')
+    .replace(/page\.click\((['"`])text=([^'"`]+)\1\)/g, (_full, _q: string, text: string) => {
+      const isLink = /link$/i.test(text);
+      const cleaned = text.replace(/\s+link$/i, '').trim();
+      return `page.getByRole(${JSON.stringify(isLink ? 'link' : 'button')}, { name: ${JSON.stringify(cleaned)} }).click()`;
+    });
+}
+
+export function flattenPlaywrightListOutput(stdout: string): Array<{ title: string; status: 'passed' | 'failed' }> {
+  const latest = new Map<string, 'passed' | 'failed'>();
+  const re = /([✘✓x√])\s+\d+\s+\[[^\]]+\]\s+›\s+.*?\s+›\s+(.+?)\s+\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(stdout))) {
+    const mark = match[1];
+    const title = match[2].replace(/\s+\(retry #\d+\)$/, '').trim();
+    latest.set(title, mark === '✓' || mark === '√' ? 'passed' : 'failed');
+  }
+  return [...latest.entries()].map(([title, status]) => ({ title, status }));
+}
+
+export function summarizePlaywrightOutput(report: unknown, stdout = '', stderr = ''): {
+  passed: boolean;
+  total: number;
+  failed: number;
+  skipped: number;
+  results: PlaywrightSpecResult[];
+  error?: string;
+} {
+  const fromJson = flattenPlaywrightJsonReport(report);
+  const fromList = flattenPlaywrightListOutput(stdout);
+  const results = fromJson.total > 0
+    ? fromJson.results
+    : fromList.map((row) => ({ title: row.title, status: row.status }));
+  const failed = results.filter((row) => row.status !== 'passed' && row.status !== 'skipped').length;
+  const skipped = results.filter((row) => row.status === 'skipped').length;
+  const noise = /NO_COLOR|FORCE_COLOR|trace-warnings/i;
+  const useful = [stdout, stderr].join('\n').split('\n').filter((line) => line.trim() && !noise.test(line)).join('\n');
+  return {
+    passed: results.length > 0 && failed === 0,
+    total: results.length,
+    failed,
+    skipped,
+    results,
+    ...(results.length === 0 && useful ? { error: useful.slice(0, 4000) } : {}),
+  };
+}
+
+export type ExecutableCase = { title?: string; id?: string; type?: string; description?: string; expectedOutcome?: string };
+
+export type ExecutableKind = 'visible' | 'navigate' | 'required' | 'submit' | 'negative';
+
+export function classifyExecutableCase(title: string, extras = ''): ExecutableKind {
+  const t = title.toLowerCase();
+  const blob = `${title}\n${extras}`.toLowerCase();
+  if (/navigat|from home|register link|sign ?up link|page access|reachable/.test(t)) return 'navigate';
+  if (/(missing|empty|blank|without)\b/.test(t) && /mandatory|required|field/.test(t)) return 'required';
+  if (/\b(success(ful)?|valid data|valid details|happy path)\b/.test(t) && !/navigat/.test(t)) return 'submit';
+  if (/\b(invalid|sql|injection|xss|security|boundary|edge|mismatch)\b/.test(blob)) return 'negative';
+  return 'visible';
+}
+
+function inferFormPath(spec: string, cases: ExecutableCase[]): string {
+  const paths = extractGotoPaths(spec);
+  const form = paths.find((path) => /regist|signup|sign-up|form/i.test(path));
+  if (form) return form;
+  if (/regist|sign[- ]?up/i.test(JSON.stringify(cases))) return 'register.htm';
+  return '';
+}
+
+function fillVisibleInputs(): string {
+  return `    const unique = \`u\${Math.random().toString(36).slice(2, 9)}\`;
+    for (const el of await page.locator('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])').all()) {
+      const type = (await el.getAttribute("type")) || "text";
+      const name = (await el.getAttribute("name")) || "";
+      if (type === "password" || /password/i.test(name)) await el.fill("Passw0rd!");
+      else if (/email/i.test(name)) await el.fill(\`\${unique}@ex.test\`);
+      else if (/user.?name/i.test(name)) await el.fill(unique);
+      else if (/zip/i.test(name)) await el.fill("12345");
+      else if (/phone/i.test(name)) await el.fill("5550100");
+      else if (/ssn/i.test(name)) await el.fill("123456789");
+      else await el.fill("Ada");
+    }`;
+}
+
+function clickPrimarySubmit(): string {
+  return `    const formSubmit = page.locator('form input[type="submit"], form button[type="submit"]').last();
+    if (await formSubmit.count()) await formSubmit.click();
+    else {
+      const btn = page.getByRole("button", { name: /register|submit|create|save|continue|log ?in/i }).last();
+      if (await btn.count()) await btn.click();
+    }`;
+}
+
+function executableBody(kind: ExecutableKind, formPath: string): string {
+  const form = JSON.stringify(formPath);
+  const submit = clickPrimarySubmit();
+  switch (kind) {
+    case 'navigate':
+      return `    await page.goto("");
+    const link = page.getByRole("link", { name: /register|sign ?up|create account/i }).first();
+    if (await link.count()) await link.click();
+    else await page.goto(${form});
+    await expect(page.locator("body")).toBeVisible();`;
+    case 'required':
+      return `    await page.goto(${form});
+${submit}
+    await expect(page.locator(".error, [class*='error'], [id*='error']").first()).toBeVisible();`;
+    case 'submit':
+      return `    await page.goto(${form});
+${fillVisibleInputs()}
+${submit}
+    await expect(page.locator("body")).toContainText(/successfully|welcome|created successfully|logged in/i);`;
+    case 'negative':
+      return `    await page.goto(${form});
+    await expect(page.locator("body")).toBeVisible();
+${submit}
+    await expect(page.locator("body")).toBeVisible();`;
+    default:
+      return `    await page.goto("");
+    await expect(page.locator("body")).toBeVisible();`;
+  }
+}
+
+export function buildExecutableSuiteFromCases(
+  cases: ExecutableCase[],
+  opts: { specHint?: string; locators?: string[] } = {},
+): string {
+  const formPath = inferFormPath(opts.specHint ?? '', cases);
+  const tests = cases.map((tc, index) => {
+    const title = String(tc.title ?? `TC-${String(index + 1).padStart(3, '0')}`);
+    const kind = classifyExecutableCase(title, `${tc.type ?? ''} ${tc.description ?? ''} ${tc.expectedOutcome ?? ''}`);
+    return `  test(${JSON.stringify(title)}, async ({ page }) => {\n${executableBody(kind, formPath)}\n  });`;
+  });
+  return `import { test, expect } from "@playwright/test";
+
+test.describe("generated cases", () => {
+${tests.join('\n\n')}
+});
+`;
+}
+
+export function extractUpstreamLocators(upstream: Record<string, unknown>): string[] {
+  for (const value of Object.values(upstream)) {
+    if (!value || typeof value !== 'object') continue;
+    const rec = value as Record<string, unknown>;
+    if (Array.isArray(rec.locators)) return rec.locators.map(String);
+  }
+  return [];
+}
+
 function specCoversCases(spec: string, cases: Array<{ title: string }>): boolean {
-  if (!spec.trim() || countPlaywrightTests(spec) !== cases.length) return false;
+  if (!spec.trim() || specLooksUnimplemented(spec) || countPlaywrightTests(spec) !== cases.length) return false;
   const titles = extractPlaywrightTests(spec).map((test) => test.title.trim().toLowerCase());
   return cases.every((tc) => titles.includes(tc.title.trim().toLowerCase()));
 }
@@ -350,11 +583,7 @@ export function buildSuiteFromGeneratedCases(
   const tests = cases.map((tc, index) => {
     const title = String(tc.title ?? `TC-${String(index + 1).padStart(3, '0')}`);
     const matched = fromSpec.find((item) => item.title.trim().toLowerCase() === title.trim().toLowerCase());
-    let body = matched?.body;
-    if (!body) {
-      const kind = classifyParabankCase(title, `${tc.type ?? ''} ${tc.description ?? ''}`);
-      body = kind ? testBody(kind) : genericCaseBody(tc);
-    }
+    const body = matched && !isPlaceholderTestBody(matched.body) ? matched.body : genericCaseBody(tc);
     return `  test(${JSON.stringify(title)}, async ({ page }) => {\n${indentTestBody(body)}\n  });`;
   });
   return `import { test, expect } from "@playwright/test";
@@ -370,6 +599,43 @@ export function alignSpecToTestCases(spec: string, context: unknown = {}): strin
   if (!cases.length) return spec;
   if (specCoversCases(spec, cases)) return spec;
   return buildSuiteFromGeneratedCases(spec, cases);
+}
+
+export function extractCodeReview(upstream: Record<string, unknown>): { score?: number; issues?: unknown[]; recommendation?: string } | null {
+  for (const value of Object.values(upstream)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const rec = value as { score?: unknown; issues?: unknown; recommendation?: unknown };
+    if (rec.score == null || (!Array.isArray(rec.issues) && rec.recommendation == null)) continue;
+    return {
+      score: Number(rec.score),
+      issues: Array.isArray(rec.issues) ? rec.issues : [],
+      recommendation: rec.recommendation != null ? String(rec.recommendation) : undefined,
+    };
+  }
+  return null;
+}
+
+export function isBadCodeReview(review: { score?: number; issues?: unknown[] } | null | undefined): boolean {
+  if (!review) return false;
+  const score = Number(review.score);
+  const issues = Array.isArray(review.issues) ? review.issues : [];
+  return (Number.isFinite(score) && score < 7) || issues.length >= 3;
+}
+
+export function resolveExecutableSpec(
+  spec: string,
+  context: unknown = {},
+  locators: string[] = [],
+): string {
+  const cases = extractTestCasesFromContext(context);
+  if (cases.length) {
+    return buildExecutableSuiteFromCases(cases, { specHint: spec, locators });
+  }
+  if (!spec.trim()) return '';
+  return applyDiscoveredLocators(
+    modernizePlaywrightSpec(alignSpecToTestCases(spec, context)),
+    locators,
+  );
 }
 
 export function buildQeMarkdownReport(execute: Record<string, unknown>): string {
@@ -407,13 +673,13 @@ export function resolvePlaywrightBaseUrl(
   cfg: { playwrightBaseUrl?: string } | undefined,
   workflowInput: unknown,
 ): string {
-  const fromCfg = cfg?.playwrightBaseUrl?.trim();
-  if (fromCfg) return fromCfg.replace(/\/$/, '');
   if (workflowInput && typeof workflowInput === 'object') {
     const rec = workflowInput as Record<string, unknown>;
     const fromInput = rec.baseUrl ?? rec.targetUrl ?? rec.url;
     if (typeof fromInput === 'string' && fromInput.trim()) return fromInput.trim().replace(/\/$/, '');
   }
+  const fromCfg = cfg?.playwrightBaseUrl?.trim();
+  if (fromCfg) return fromCfg.replace(/\/$/, '');
   return DEFAULT_PLAYWRIGHT_BASE_URL;
 }
 
