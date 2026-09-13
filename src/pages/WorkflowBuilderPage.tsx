@@ -605,7 +605,7 @@ function BuilderInner() {
             canRunWf && <button onClick={cancelRun} className="btn-danger text-sm shrink-0" aria-label="Cancel run"><X className="w-4 h-4" /> Cancel Run</button>
           ) : (
             canRunWf && <button onClick={() => {
-              const raw = wf.defaultInput && wf.defaultInput !== '{}' ? wf.defaultInput : '{\n  "workItemId": 21\n}';
+              const raw = wf.defaultInput && wf.defaultInput !== '{}' ? wf.defaultInput : '{\n  "workItemId": "",\n  "baseUrl": ""\n}';
               setRunInput(raw);
               const fields = fieldsFromSchema(wf.inputSchema, raw);
               setRunFields(fields);

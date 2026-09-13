@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import { publishToAzureDevOps, type AdoAttachment, type AdoRepoFile, type AdoTestCase } from './server/ado-upload';
+import { normalizeAdoFields } from './src/lib/adoWorkItem';
 
 const DEFAULT_ORG = 'aiqenexus';
 
@@ -96,29 +97,12 @@ export function adoDevProxy(): Plugin {
           }
           const workItem = await adoRes.json() as { id?: number; rev?: number; url?: string; fields?: Record<string, unknown> };
           const fields = workItem.fields ?? {};
-          const assigned = fields['System.AssignedTo'];
-          const normalized = {
-            id: workItem.id ?? cleanId,
-            title: fields['System.Title'] ?? null,
-            description: fields['System.Description'] ?? null,
-            state: fields['System.State'] ?? null,
-            assignedTo: assigned && typeof assigned === 'object' && assigned !== null && 'displayName' in assigned
-              ? (assigned as { displayName?: string }).displayName
-              : null,
-            workItemType: fields['System.WorkItemType'] ?? null,
-            acceptanceCriteria: fields['Microsoft.VSTS.Common.AcceptanceCriteria'] ?? null,
-            tags: fields['System.Tags'] ? String(fields['System.Tags']).split(';').map((t) => t.trim()) : [],
-            createdDate: fields['System.CreatedDate'] ?? null,
-            changedDate: fields['System.ChangedDate'] ?? null,
-            areaPath: fields['System.AreaPath'] ?? null,
-            iterationPath: fields['System.IterationPath'] ?? null,
-            priority: fields['Microsoft.VSTS.Common.Priority'] ?? null,
-            boardColumn: fields['System.BoardColumn'] ?? null,
-          };
+          const normalized = normalizeAdoFields(fields, workItem.id ?? cleanId);
           json(res, 200, {
             workItemId: cleanId,
             rawWorkItem: { id: workItem.id, rev: workItem.rev, url: workItem.url, fields },
             normalized,
+            extractedFields: normalized,
             source: 'azure-devops',
             llmUsage: null,
           });

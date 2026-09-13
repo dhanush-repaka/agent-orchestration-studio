@@ -122,8 +122,8 @@ Running 2 tests using 1 worker
       'https://app.test/home',
     ]);
     expect(extractGotoPaths('await page.goto(`${baseUrl}/register.htm`);')).toEqual(['/']);
-    expect(extractGotoPaths('await page.goto("https://parabank.parasoft.com/register");')).toEqual([
-      'register.htm',
+    expect(extractGotoPaths('await page.goto("https://app.test/register");')).toEqual([
+      'https://app.test/register',
     ]);
   });
 
@@ -145,13 +145,27 @@ Running 2 tests using 1 worker
     });
     expect(countPlaywrightTests(next)).toBe(5);
     expect(next).toContain('Verify Home Page Display');
-    expect(next).toContain('register.htm');
     expect(next).toContain('getByRole("link"');
     expect(next).toContain('Passw0rd!');
     expect(next).not.toContain('Welcome John Doe');
     expect(next).not.toContain('Email field is required');
     expect(next).not.toContain('page.click(');
     expect(next).not.toContain('https://parabank.parasoft.com/register"');
+  });
+
+  it('writes work-item steps into the suite instead of a login form template', () => {
+    const next = buildExecutableSuiteFromCases([
+      {
+        title: 'User can request a reset email',
+        steps: ['Open the profile page', 'Click Forgot password', 'Submit a valid email'],
+        expectedOutcome: 'Reset email is sent',
+      },
+    ]);
+    expect(next).toContain('User can request a reset email');
+    expect(next).toContain('Open the profile page');
+    expect(next).toContain('Reset email is sent');
+    expect(next).not.toContain('Passw0rd!');
+    expect(next).not.toContain('register.htm');
   });
 
   it('classifies by title so description words like successfully do not flip the kind', () => {
@@ -206,9 +220,10 @@ test("Open about", async ({ page }) => { await page.goto("/about"); });`;
     expect(spec).toContain('first name is required');
   });
 
-  it('keeps Parabank app paths under /parabank', () => {
-    expect(resolveAppUrl('/register.htm', DEFAULT_PLAYWRIGHT_BASE_URL)).toBe('https://parabank.parasoft.com/parabank/register.htm');
-    expect(rewriteSpecUrls('await page.goto("/register.htm");', DEFAULT_PLAYWRIGHT_BASE_URL)).toContain('/parabank/register.htm');
+  it('keeps app paths under the provided base URL', () => {
+    const base = 'https://app.test/shop';
+    expect(resolveAppUrl('/register.htm', base)).toBe('https://app.test/shop/register.htm');
+    expect(rewriteSpecUrls('await page.goto("/register.htm");', base)).toContain('/shop/register.htm');
   });
 
   it('resolves base URL from workflow input, then node config', () => {

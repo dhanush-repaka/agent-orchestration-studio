@@ -1,4 +1,4 @@
-export const DEFAULT_PLAYWRIGHT_BASE_URL = 'https://parabank.parasoft.com/parabank';
+export const DEFAULT_PLAYWRIGHT_BASE_URL = '';
 
 export type ParabankKind =
   | 'success'
@@ -151,15 +151,15 @@ export function classifyParabankCase(title: string, extras = ''): ParabankKind |
   return null;
 }
 
-export function extractTestCasesFromContext(context: unknown): Array<{ title: string; id?: string; type?: string; description?: string; expectedOutcome?: string }> {
-  const found: Array<{ title: string; id?: string; type?: string; description?: string; expectedOutcome?: string }> = [];
+export function extractTestCasesFromContext(context: unknown): Array<{ title: string; id?: string; type?: string; description?: string; expectedOutcome?: string; steps?: string[] }> {
+  const found: Array<{ title: string; id?: string; type?: string; description?: string; expectedOutcome?: string; steps?: string[] }> = [];
   const seen = new Set<string>();
   const visit = (value: unknown, depth = 0) => {
     if (!value || depth > 8) return;
     if (Array.isArray(value)) {
       if (value.length && typeof value[0] === 'object' && value[0] && 'title' in (value[0] as object)) {
         const sample = value[0] as Record<string, unknown>;
-        const looksLikeCase = 'expectedOutcome' in sample || 'priority' in sample || 'preconditions' in sample || 'type' in sample;
+        const looksLikeCase = 'expectedOutcome' in sample || 'priority' in sample || 'preconditions' in sample || 'type' in sample || 'steps' in sample;
         if (!looksLikeCase) {
           for (const item of value) visit(item, depth + 1);
           return;
@@ -176,6 +176,9 @@ export function extractTestCasesFromContext(context: unknown): Array<{ title: st
             type: rec.type != null ? String(rec.type) : undefined,
             description: rec.description != null ? String(rec.description) : undefined,
             expectedOutcome: rec.expectedOutcome != null ? String(rec.expectedOutcome) : undefined,
+            steps: Array.isArray((rec as { steps?: unknown }).steps)
+              ? (rec as { steps: unknown[] }).steps.map(String)
+              : undefined,
           });
         }
         return;
@@ -195,7 +198,7 @@ export function buildParabankSuiteFromCases(
   cases: Array<{ title?: string; id?: string; type?: string; description?: string }>,
 ): string {
   const used = new Set<ParabankKind>();
-  const tests = (cases.length ? cases : PARABANK_REGISTRATION_TEST_CASES).map((tc, index) => {
+  const tests = cases.map((tc, index) => {
     const title = String(tc.title ?? `TC-${String(index + 1).padStart(3, '0')}`);
     let kind = classifyParabankCase(title, `${tc.type ?? ''} ${tc.description ?? ''}`);
     if (!kind || used.has(kind)) {
@@ -335,8 +338,6 @@ export function isRunnerInfrastructureError(error: unknown): boolean {
 export function normalizeGotoPath(path: string): string {
   const trimmed = path.trim();
   if (!trimmed || trimmed.includes('${') || /baseUrl/i.test(trimmed)) return '';
-  if (/^https?:\/\/[^/]+\/register\/?$/i.test(trimmed) && !/\.html?$/i.test(trimmed)) return 'register.htm';
-  if (/^\/?register\/?$/i.test(trimmed) && !/\.html?$/i.test(trimmed)) return 'register.htm';
   return trimmed;
 }
 
@@ -446,7 +447,7 @@ export function summarizePlaywrightOutput(report: unknown, stdout = '', stderr =
   };
 }
 
-export type ExecutableCase = { title?: string; id?: string; type?: string; description?: string; expectedOutcome?: string };
+export type ExecutableCase = { title?: string; id?: string; type?: string; description?: string; expectedOutcome?: string; steps?: string[] };
 
 export type ExecutableKind = 'visible' | 'navigate' | 'required' | 'submit' | 'negative';
 
@@ -460,12 +461,25 @@ export function classifyExecutableCase(title: string, extras = ''): ExecutableKi
   return 'visible';
 }
 
-function inferFormPath(spec: string, cases: ExecutableCase[]): string {
+function inferFormPath(spec: string, _cases: ExecutableCase[]): string {
   const paths = extractGotoPaths(spec);
-  const form = paths.find((path) => /regist|signup|sign-up|form/i.test(path));
-  if (form) return form;
-  if (/regist|sign[- ]?up/i.test(JSON.stringify(cases))) return 'register.htm';
-  return '';
+  const form = paths.find((path) => /regist|signup|sign-up|form|login/i.test(path) && !/^https?:\/\//i.test(path));
+  return form ?? '';
+}
+
+function bodyFromWorkItemSteps(tc: ExecutableCase): string | null {
+  const steps = (tc.steps ?? []).map((step) => String(step).trim()).filter(Boolean);
+  if (!steps.length) return null;
+  const expected = String(tc.expectedOutcome ?? '').trim();
+  const lines = [
+    '    await page.goto("");',
+    '    await expect(page.locator("body")).toBeVisible();',
+    ...steps.map((step) => `    // ${step.replace(/\s+/g, ' ')}`),
+  ];
+  if (expected) {
+    lines.push(`    await expect(page.locator("body")).toContainText(${JSON.stringify(expected)});`);
+  }
+  return lines.join('\n');
 }
 
 function fillVisibleInputs(): string {
@@ -529,8 +543,9 @@ export function buildExecutableSuiteFromCases(
   const formPath = inferFormPath(opts.specHint ?? '', cases);
   const tests = cases.map((tc, index) => {
     const title = String(tc.title ?? `TC-${String(index + 1).padStart(3, '0')}`);
+    const fromSteps = bodyFromWorkItemSteps(tc);
     const kind = classifyExecutableCase(title, `${tc.type ?? ''} ${tc.description ?? ''} ${tc.expectedOutcome ?? ''}`);
-    return `  test(${JSON.stringify(title)}, async ({ page }) => {\n${executableBody(kind, formPath)}\n  });`;
+    return `  test(${JSON.stringify(title)}, async ({ page }) => {\n${fromSteps ?? executableBody(kind, formPath)}\n  });`;
   });
   return `import { test, expect } from "@playwright/test";
 

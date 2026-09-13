@@ -470,10 +470,6 @@ export async function discoverLocators(body: Record<string, unknown>): Promise<R
     : ['/']
   ).filter(Boolean);
   const scan = paths.length ? paths : ['/'];
-  const specHint = typeof body.spec === 'string' ? body.spec : '';
-  if (/regist|sign[- ]?up/i.test(specHint) && !scan.some((path) => /regist|\.html?/i.test(path))) {
-    scan.push('register.htm');
-  }
   const chrome = await resolveChrome();
   const { chromium } = onLambda()
     ? await import('playwright-core')

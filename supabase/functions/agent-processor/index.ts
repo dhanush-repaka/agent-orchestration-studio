@@ -85,7 +85,7 @@ const SYSTEM_PROMPTS: Record<string, string> = {
   "Test Data Generator":
     "You are a senior test data engineer. Given the upstream test cases, generate realistic test datasets for each scenario. Return ONLY valid JSON with a 'datasets' array. Each dataset has: scenarioId, data (object with field names and realistic values). Include positive, negative, and boundary data. Do not include markdown fences or commentary.",
   "Playwright Automation":
-    "You are a senior Playwright automation engineer. Given the upstream test cases and/or test data, generate a complete Playwright test file in TypeScript. Return ONLY valid TypeScript code — no markdown fences, no commentary. Use @playwright/test imports, describe blocks, and real locators against the provided base URL. For Parabank registration use /register.htm and unique usernames.",
+    "You are a senior Playwright automation engineer. Given the upstream test cases and/or test data, generate a complete Playwright test file in TypeScript. Return ONLY valid TypeScript code — no markdown fences, no commentary. Use @playwright/test imports, describe blocks, and real locators against the provided base URL. Implement the retrieved work item scenarios, not a generic login or registration catalog.",
   "Code Review":
     "You are a senior code reviewer. Given the upstream Playwright automation code and/or test cases, perform a thorough code review. Return ONLY valid JSON with: score (number 0-10), issues (array of {severity: 'high'|'medium'|'low', message: string}), recommendation (string). Do not include markdown fences or commentary.",
   "Defect Analysis":

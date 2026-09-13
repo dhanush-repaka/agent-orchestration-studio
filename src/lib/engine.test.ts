@@ -388,6 +388,71 @@ describe('user story workflow', () => {
     expect(run.nodeExecutions.map((n) => n.nodeId)).not.toContain('n19');
   });
 
+  it('uses acceptance criteria from the retrieved work item instead of a login catalog', async () => {
+    const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
+    const invoke: InvokeFn = async (slug, payload) => {
+      if (slug === 'ado-retrieval') {
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            workItemId: 44,
+            source: 'azure-devops',
+            normalized: {
+              id: 44,
+              title: 'Password reset',
+              workItemType: 'User Story',
+              description: 'Users reset their password from the profile page.',
+              acceptanceCriteria: ['User can request a reset email', 'Token expires after 15 minutes'],
+            },
+            extractedFields: {
+              id: 44,
+              title: 'Password reset',
+              workItemType: 'User Story',
+              description: 'Users reset their password from the profile page.',
+              acceptanceCriteria: ['User can request a reset email', 'Token expires after 15 minutes'],
+            },
+          } as never,
+        };
+      }
+      if (slug === 'ado-upload' || slug === 'playwright-execute' || slug === 'playwright-locators') {
+        return { ok: slug !== 'ado-upload', status: slug === 'ado-upload' ? 500 : 200, data: { error: 'skip', locators: [], passed: true, total: 2, failed: 0, results: [] } as never };
+      }
+      const type = String((payload as { agentType?: string }).agentType ?? '');
+      if (type === 'Test Case Generator') {
+        throw new Error('Test Case Generator should use the retrieved work item');
+      }
+      const result = type === 'Playwright Automation'
+        ? 'import { test } from "@playwright/test";\ntest("User can request a reset email", async ({ page }) => { await page.goto(""); });'
+        : type === 'Requirement Analysis'
+          ? { workItemId: '21', title: 'Parabank Registration', qualityScore: 82, acceptanceCriteria: ['valid details'] }
+          : { ok: true };
+      return { ok: true, status: 200, data: { result, llmUsage: { total_tokens: 4 } } as never };
+    };
+
+    const run = await executeWorkflow({
+      workflow: SAMPLE_WORKFLOW,
+      agents: AGENTS,
+      runtimeInput: '{"workItemId":44}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: {
+        isCancelled: () => false,
+        onNodeStatus: () => {},
+        waitForApproval: async () => true,
+      },
+    });
+
+    const generated = JSON.parse(run.nodeExecutions.find((n) => n.nodeId === 'n5')?.output ?? '{}');
+    expect(generated.source).toBe('work-item');
+    expect(generated.testCases.map((item: { title: string }) => item.title)).toEqual([
+      'User can request a reset email',
+      'Token expires after 15 minutes',
+    ]);
+    expect(generated.testCases[0].title).not.toMatch(/login/i);
+  });
+
   it('rewrites the Playwright spec when Code Review scores it badly', async () => {
     const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
     const cases = [
@@ -400,9 +465,11 @@ describe('user story workflow', () => {
       }
       if (slug === 'playwright-execute') {
         const spec = String((payload as { spec?: string }).spec ?? '');
-        expect(spec).toContain('register.htm');
+        expect(spec).toContain('Verify Registration Link Navigation');
+        expect(spec).toContain('Successful Registration with Valid Data');
         expect(spec).toContain('getByRole("link"');
         expect(spec).not.toContain('https://parabank.parasoft.com/register');
+        expect(spec).not.toContain('customer.firstName');
         return {
           ok: true,
           status: 200,
@@ -446,8 +513,9 @@ describe('user story workflow', () => {
     });
 
     expect(run.nodeExecutions.map((n) => n.nodeId)).toContain('n19');
-    expect(run.nodeExecutions.find((n) => n.nodeId === 'n19')?.output).toContain('register.htm');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n19')?.output).toContain('Verify Registration Link Navigation');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n19')?.output).not.toContain('https://parabank.parasoft.com/register');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n19')?.output).not.toContain('customer.firstName');
     expect(run.nodeExecutions.find((n) => n.nodeId === 'n10')?.output).toContain('"passed": true');
   });
 

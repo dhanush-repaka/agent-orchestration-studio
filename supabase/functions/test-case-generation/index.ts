@@ -72,14 +72,14 @@ interface TestCaseGenerationRequest {
 }
 
 const SYSTEM_PROMPT =
-  "You are a senior QA architect. Using the normalized Azure DevOps work item produced by the ADO Work Item Retrieval Agent, reason step-by-step to design comprehensive test cases. Cover functional paths, boundary and edge cases, negative and error paths, and relevant non-functional concerns (performance, security, accessibility). For each test case, include a clear title, description, preconditions, the requirement it traces back to, priority, type, and expected outcome. Return ONLY valid JSON.";
+  "You are a senior QA architect. Using the normalized Azure DevOps work item produced by the ADO Work Item Retrieval Agent, write test cases only for the behavior in that work item. Use its acceptance criteria, description, repro steps, and listed scenarios. Do not add a generic login, registration, performance, security, or accessibility catalog unless the work item asks for that. Return ONLY valid JSON.";
 
 function buildUserPrompt(workItem: TestCaseGenerationRequest["adoWorkItem"]): string {
-  return `Generate test cases from the following normalized work item output produced by the upstream ADO Work Item Retrieval agent:
+  return `Generate test cases from the following retrieved Azure DevOps work item:
 
 ${JSON.stringify(workItem, null, 2)}
 
-The work item contains: id, title, description, state, assignedTo, workItemType, acceptanceCriteria, tags, createdDate, changedDate. Use the acceptanceCriteria to drive test coverage. For each test case include: id, title, description, preconditions, requirementId (traceability to the source work item id), priority (critical/high/medium/low), type (functional/boundary/negative/non-functional), and expectedOutcome. Group test cases under a "testCases" array. Do not include markdown fences or commentary.`;
+Use the work item title, description, acceptanceCriteria, repro steps, and any listed scenarios as the source of truth. For each test case include: id, title, description, preconditions, steps, requirementId (traceability to the source work item id), priority (critical/high/medium/low), type (functional/negative/edge), and expectedOutcome. Group test cases under a "testCases" array. Do not include markdown fences or commentary.`;
 }
 
 Deno.serve(async (req: Request) => {

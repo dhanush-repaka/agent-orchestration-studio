@@ -57,7 +57,7 @@ export function AgentConfigPage() {
   const agent = agents.find((a) => a.id === selectedAgentId);
   const [section, setSection] = useState<Section>('basic');
   const [draft, setDraft] = useState<Agent | null>(agent ?? null);
-  const [testInput, setTestInput] = useState('{\n  "workItemId": 21\n}');
+  const [testInput, setTestInput] = useState('{\n  "workItemId": ""\n}');
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testRunning, setTestRunning] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);

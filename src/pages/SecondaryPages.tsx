@@ -1032,7 +1032,7 @@ function EvaluationCard({ ev }: { ev: Evaluation }) {
                 </button>
               </div>
               <Field label="Input sent to the agent">
-                <textarea className="input font-mono text-xs min-h-[72px]" value={c.input} onChange={(e) => updateEvaluationCase(ev.id, c.id, { input: e.target.value })} placeholder='{"workItemId":21}' />
+                <textarea className="input font-mono text-xs min-h-[72px]" value={c.input} onChange={(e) => updateEvaluationCase(ev.id, c.id, { input: e.target.value })} placeholder='{"workItemId":""}' />
               </Field>
               <Field label="Expected output">
                 <textarea className="input font-mono text-xs min-h-[72px]" value={c.expectedOutput} onChange={(e) => updateEvaluationCase(ev.id, c.id, { expectedOutput: e.target.value })} placeholder="What a correct answer should look like" />

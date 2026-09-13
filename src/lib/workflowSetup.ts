@@ -38,7 +38,7 @@ export function applyDefaultPlaywrightSettings(wf: Workflow): Workflow {
     if (node.data.nodeType !== 'playwright-mcp') return node;
     const cfg = { ...(node.data.config as Record<string, unknown> | undefined) };
     let nodeChanged = false;
-    if (!cfg.playwrightBaseUrl) {
+    if (!cfg.playwrightBaseUrl && DEFAULT_PLAYWRIGHT_BASE_URL) {
       cfg.playwrightBaseUrl = DEFAULT_PLAYWRIGHT_BASE_URL;
       nodeChanged = true;
     }
@@ -52,26 +52,35 @@ export function applyDefaultPlaywrightSettings(wf: Workflow): Workflow {
     return { ...node, data: { ...node.data, config: cfg } };
   });
 
-  let next: Workflow = changed ? { ...wf, nodes, updatedAt: new Date().toISOString() } : wf;
-  if (next.id === USER_STORY_WORKFLOW_ID && next.defaultInput) {
+  return changed ? { ...wf, nodes, updatedAt: new Date().toISOString() } : wf;
+}
+
+export function applyNeutralPlaywrightConfig(wf: Workflow): Workflow {
+  let changed = false;
+  const nodes = wf.nodes.map((node) => {
+    const cfg = node.data.config as { playwrightBaseUrl?: string } | undefined;
+    if (!cfg?.playwrightBaseUrl || !/parabank\.parasoft\.com/i.test(cfg.playwrightBaseUrl)) return node;
+    changed = true;
+    return { ...node, data: { ...node.data, config: { ...cfg, playwrightBaseUrl: '' } } };
+  });
+  let next = changed ? { ...wf, nodes } : wf;
+  if (next.defaultInput && /parabank\.parasoft\.com/i.test(next.defaultInput)) {
     try {
       const parsed = JSON.parse(next.defaultInput) as Record<string, unknown>;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && !parsed.baseUrl) {
-        next = {
-          ...next,
-          defaultInput: JSON.stringify({ ...parsed, baseUrl: DEFAULT_PLAYWRIGHT_BASE_URL }),
-          updatedAt: new Date().toISOString(),
-        };
+      if (typeof parsed.baseUrl === 'string' && /parabank\.parasoft\.com/i.test(parsed.baseUrl)) {
+        parsed.baseUrl = '';
+        next = { ...next, defaultInput: JSON.stringify(parsed) };
+        changed = true;
       }
     } catch {
       // keep the stored input
     }
   }
-  return next;
+  return changed ? { ...next, updatedAt: new Date().toISOString() } : next;
 }
 
 export function applyStudioDefaults(wf: Workflow): Workflow {
-  return ensureCodeChangeLinked(applyDefaultPlaywrightSettings(applyDefaultAdoSettings(wf)));
+  return ensureCodeChangeLinked(applyNeutralPlaywrightConfig(applyDefaultPlaywrightSettings(applyDefaultAdoSettings(wf))));
 }
 
 export function codeChangeIsLinked(wf: Workflow): boolean {

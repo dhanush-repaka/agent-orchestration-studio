@@ -23,7 +23,7 @@ import { loadCatalogs, saveCatalogs, type CatalogSnapshot } from '@/lib/catalog'
 import { isScheduleDue } from '@/lib/cron';
 import { callEdgeFunction } from '@/lib/api';
 import { applyStudioDefaults, mergeUserStoryWorkflow, needsUserStoryUpgrade, USER_STORY_WORKFLOW_ID } from '@/lib/workflowSetup';
-import { defaultCustomPrompts, publishReadyErrors } from '@/lib/agents';
+import { defaultCustomPrompts, publishReadyErrors, sanitizeAgents } from '@/lib/agents';
 import { authErrorMessage, userFromAuth } from '@/lib/auth';
 import { loadAuditLogs, newAuditLog, persistAuditLog } from '@/lib/audit';
 import { ensureAdministratorExists, ensureUserRow, loadUserRoles, upsertUserRole } from '@/lib/users';
@@ -1781,13 +1781,16 @@ export const useStore = create<AppState>((set, get) => ({
     if (dbAgents.length === 0) return;
     const leftovers = dbAgents.filter(isUntitledSkeleton);
     leftovers.forEach((a) => { void deleteAgentFromDb(a.id); });
-    const kept = dbAgents.filter((a) => !isUntitledSkeleton(a));
+    const fromDb = dbAgents.filter((a) => !isUntitledSkeleton(a));
+    const kept = sanitizeAgents(fromDb, AGENTS);
+    const persistCleaned = kept.filter((agent, index) => fromDb[index] !== agent);
     set((s) => {
       const byId = new Map(s.agents.map((a) => [a.id, a]));
       for (const a of kept) byId.set(a.id, a);
       leftovers.forEach((a) => byId.delete(a.id));
       return { agents: Array.from(byId.values()) };
     });
+    persistCleaned.forEach((agent) => persistAgent({ ...agent, persisted: true }));
   },
   hydrateWorkflows: async () => {
     const dbWorkflows = await loadWorkflowsFromDb();

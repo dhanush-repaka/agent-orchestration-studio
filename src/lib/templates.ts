@@ -14,14 +14,14 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     name: 'User story to tests',
     description: 'Take a work item id and app URL, discover locators, run Playwright, then wait for approval.',
     category: 'Quality',
-    defaultInput: JSON.stringify({ workItemId: 21, baseUrl: 'https://example.com' }, null, 2),
+    defaultInput: JSON.stringify({ workItemId: '', baseUrl: '' }, null, 2),
   },
   {
     id: 'defect-triage',
     name: 'Defect triage',
     description: 'Normalize a defect, route by severity, and pause for a human decision.',
     category: 'Quality',
-    defaultInput: JSON.stringify({ title: 'Login fails', severity: 'high', details: '' }, null, 2),
+    defaultInput: JSON.stringify({ title: '', severity: '', details: '' }, null, 2),
   },
   {
     id: 'api-check',

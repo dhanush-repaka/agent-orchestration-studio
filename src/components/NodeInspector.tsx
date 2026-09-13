@@ -687,7 +687,7 @@ function PlaywrightFields({ cfg, setCfg }: { cfg: NodeRuntimeConfig; setCfg: (pa
       <Field label="Base URL">
         <input
           className="input font-mono text-xs"
-          placeholder="https://parabank.parasoft.com/parabank"
+          placeholder="https://example.com"
           value={cfg.playwrightBaseUrl ?? ''}
           onChange={(e) => setCfg({ playwrightBaseUrl: e.target.value })}
         />

@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { serverAdoOrg } from "../_shared/ssrf.ts";
+import { normalizeAdoFields } from "../_shared/adoWorkItem.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -32,9 +33,6 @@ Deno.serve(async (req: Request) => {
     }
 
     const adoOrg = serverAdoOrg();
-    const llmApiKey = Deno.env.get("LLM_API_KEY");
-    const llmBaseUrl = (Deno.env.get("LLM_BASE_URL") ?? "https://api.openai.com/v1").replace(/\/$/, "");
-    const llmModel = "gpt-4o-mini";
     const apiVersion = (body.adoApiVersion && String(body.adoApiVersion).trim()) || Deno.env.get("ADO_API_VERSION") || "7.0";
 
     if (!adoOrg) {
@@ -134,77 +132,15 @@ Deno.serve(async (req: Request) => {
 
     const workItem = await adoRes.json();
     const fields = workItem.fields ?? {};
-
-    const normalized: Record<string, unknown> = {
-      id: workItem.id ?? cleanId,
-      title: fields["System.Title"] ?? null,
-      description: fields["System.Description"] ?? null,
-      state: fields["System.State"] ?? null,
-      assignedTo: fields["System.AssignedTo"]?.displayName ?? null,
-      workItemType: fields["System.WorkItemType"] ?? null,
-      acceptanceCriteria: fields["Microsoft.VSTS.Common.AcceptanceCriteria"] ?? null,
-      tags: fields["System.Tags"] ? String(fields["System.Tags"]).split(";").map((t: string) => t.trim()) : [],
-      createdDate: fields["System.CreatedDate"] ?? null,
-      changedDate: fields["System.ChangedDate"] ?? null,
-      areaPath: fields["System.AreaPath"] ?? null,
-      iterationPath: fields["System.IterationPath"] ?? null,
-      priority: fields["Microsoft.VSTS.Common.Priority"] ?? null,
-      boardColumn: fields["System.BoardColumn"] ?? null,
-    };
-
-    if (llmApiKey) {
-      const systemPrompt =
-        "You are a data retrieval specialist for Azure DevOps. Given a raw work item, extract and normalize its key fields into a clean JSON object. Return ONLY valid JSON with these fields: id, title, description, state, assignedTo, workItemType, acceptanceCriteria, tags, createdDate, changedDate. Use null for any field that is not present in the source work item. Do not include commentary or markdown fences.";
-      const userPrompt = `Normalize this Azure DevOps work item:\n\n${JSON.stringify(workItem)}`;
-
-      try {
-        const llmRes = await fetch(`${llmBaseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${llmApiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: llmModel,
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: userPrompt },
-            ],
-            temperature: 0,
-            max_tokens: 2000,
-          }),
-        });
-
-        if (llmRes.ok) {
-          const llmJson = await llmRes.json();
-          const content: string = llmJson.choices?.[0]?.message?.content ?? "";
-          try {
-            const cleaned = content.replace(/```json\n?/g, "").replace(/```/g, "").trim();
-            const llmNormalized = JSON.parse(cleaned);
-            return new Response(
-              JSON.stringify({
-                workItemId: cleanId,
-                rawWorkItem: { id: workItem.id, rev: workItem.rev, url: workItem.url, fields },
-                normalized: llmNormalized,
-                extractedFields: normalized,
-                llmUsage: llmJson.usage ?? null,
-              }),
-              { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-            );
-          } catch {
-            // LLM returned non-JSON, fall through to extracted fields
-          }
-        }
-      } catch {
-        // LLM call failed, fall through to extracted fields
-      }
-    }
+    const normalized = normalizeAdoFields(fields, workItem.id ?? cleanId);
 
     return new Response(
       JSON.stringify({
         workItemId: cleanId,
         rawWorkItem: { id: workItem.id, rev: workItem.rev, url: workItem.url, fields },
         normalized,
+        extractedFields: normalized,
+        source: "azure-devops",
         llmUsage: null,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },

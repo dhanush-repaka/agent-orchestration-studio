@@ -38,17 +38,18 @@ describe('user story workflow setup', () => {
     expect((next.nodes.find((n) => n.id === 'n2')?.data.config as { adoOrg?: string }).adoOrg).toBe(DEFAULT_ADO_ORG);
   });
 
-  it('fills the Parabank base URL on Playwright nodes and workflow input', () => {
+  it('does not inject a hardcoded app URL', () => {
     const stripped = {
       ...SAMPLE_WORKFLOW,
-      defaultInput: '{"workItemId":21}',
+      defaultInput: '{"workItemId":21,"baseUrl":"https://parabank.parasoft.com/parabank"}',
       nodes: SAMPLE_WORKFLOW.nodes.map((n) => n.id === 'n10'
-        ? { ...n, data: { ...n.data, config: { ...(n.data.config as object), playwrightBaseUrl: '' } } }
+        ? { ...n, data: { ...n.data, config: { ...(n.data.config as object), playwrightBaseUrl: 'https://parabank.parasoft.com/parabank' } } }
         : n),
     };
     const next = applyStudioDefaults(stripped);
-    expect((next.nodes.find((n) => n.id === 'n10')?.data.config as { playwrightBaseUrl?: string }).playwrightBaseUrl).toBe(DEFAULT_PLAYWRIGHT_BASE_URL);
-    expect(next.defaultInput).toContain(DEFAULT_PLAYWRIGHT_BASE_URL);
+    expect((next.nodes.find((n) => n.id === 'n10')?.data.config as { playwrightBaseUrl?: string }).playwrightBaseUrl).toBeFalsy();
+    expect(next.defaultInput).not.toMatch(/parabank/i);
+    expect((next.nodes.find((n) => n.id === 'n10')?.data.config as { playwrightBaseUrl?: string }).playwrightBaseUrl ?? '').toBe(DEFAULT_PLAYWRIGHT_BASE_URL);
   });
 
   it('wires Code Change between Code Review and Execute on a saved graph', () => {
