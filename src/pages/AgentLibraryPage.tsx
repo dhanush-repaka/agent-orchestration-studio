@@ -2,21 +2,28 @@ import { useState } from 'react';
 import { useStore, newAgentSkeleton } from '@/store';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Icon } from '@/components/Icon';
-import { AGENT_TYPES, MODEL_PROVIDERS, type Agent, type AgentType } from '@/types';
+import { AGENT_TYPES, type Agent, type AgentType } from '@/types';
+import { envLabel, inCurrentEnvironment } from '@/lib/environments';
+import { canRole } from '@/lib/roles';
 import {
   Plus, Search, Edit3, FlaskConical, Copy, Download, Archive, Trash2,
-  Bot, Filter, X,
+  Bot, Filter, X, Upload, Undo2,
 } from 'lucide-react';
 
 export function AgentLibraryPage() {
-  const agents = useStore((s) => s.agents);
+  const environment = useStore((s) => s.environment);
+  const envDefs = useStore((s) => s.environments);
+  const agents = useStore((s) => s.agents).filter((a) => inCurrentEnvironment(a.environment, environment));
   const setPage = useStore((s) => s.setPage);
   const setSelectedAgent = useStore((s) => s.setSelectedAgent);
   const createAgent = useStore((s) => s.createAgent);
   const cloneAgent = useStore((s) => s.cloneAgent);
   const deleteAgent = useStore((s) => s.deleteAgent);
   const updateAgent = useStore((s) => s.updateAgent);
+  const publishAgent = useStore((s) => s.publishAgent);
+  const unpublishAgent = useStore((s) => s.unpublishAgent);
   const addToast = useStore((s) => s.addToast);
+  const canWrite = canRole(useStore((s) => s.currentUser.role), 'agents.write');
 
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
@@ -41,7 +48,7 @@ export function AgentLibraryPage() {
     createAgent(agent);
     setSelectedAgent(agent.id);
     setPage('agent-config');
-    addToast('Untitled agent created — save to keep it in the library', 'success');
+    addToast('Untitled agent created. Configure it, then publish to use it in a workflow.', 'success');
   };
 
   const handleEdit = (id: string) => {
@@ -71,11 +78,13 @@ export function AgentLibraryPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Agent Library</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">{agents.filter((a) => a.persisted !== false).length} agents · Create, configure, and manage your AI agents</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">{agents.filter((a) => a.persisted !== false).length} agents in {envLabel(environment, envDefs)} · Publish an agent to make it available on the workflow canvas</p>
         </div>
-        <button onClick={handleCreate} className="btn-primary">
-          <Plus className="w-4 h-4" /> Create Agent
-        </button>
+        {canWrite && (
+          <button onClick={handleCreate} className="btn-primary">
+            <Plus className="w-4 h-4" /> Create Agent
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -123,7 +132,7 @@ export function AgentLibraryPage() {
         <div className="card p-12 text-center">
           <Bot className="w-12 h-12 text-slate-300 dark:text-slate-600 mx-auto mb-3" />
           <p className="text-slate-500 dark:text-slate-400 mb-4">No agents match your filters</p>
-          <button onClick={handleCreate} className="btn-primary"><Plus className="w-4 h-4" /> Create Agent</button>
+          {canWrite && <button onClick={handleCreate} className="btn-primary"><Plus className="w-4 h-4" /> Create Agent</button>}
         </div>
       )}
 
@@ -153,12 +162,17 @@ export function AgentLibraryPage() {
                 <div className="text-right"><span className="font-medium text-slate-700 dark:text-slate-300">{a.owner}</span><br />{a.workflowsUsing} workflow{a.workflowsUsing !== 1 ? 's' : ''}</div>
               </div>
               <div className="flex items-center gap-1">
-                <button onClick={() => handleEdit(a.id)} className="btn-secondary text-xs flex-1 justify-center"><Edit3 className="w-3.5 h-3.5" /> Edit</button>
-                <button onClick={() => { setSelectedAgent(a.id); setPage('agent-config'); }} className="btn-ghost text-xs p-2" title="Test"><FlaskConical className="w-4 h-4" /></button>
-                <button onClick={() => cloneAgent(a.id)} className="btn-ghost text-xs p-2" title="Clone"><Copy className="w-4 h-4" /></button>
+                {canWrite && (a.status === 'published' ? (
+                  <button onClick={() => unpublishAgent(a.id)} className="btn-secondary text-xs flex-1 justify-center" title="Move back to draft"><Undo2 className="w-3.5 h-3.5" /> Unpublish</button>
+                ) : (
+                  <button onClick={() => publishAgent(a.id)} className="btn-primary text-xs flex-1 justify-center" title="Publish so workflows can use this agent"><Upload className="w-3.5 h-3.5" /> Publish</button>
+                ))}
+                <button onClick={() => handleEdit(a.id)} className="btn-secondary text-xs flex-1 justify-center"><Edit3 className="w-3.5 h-3.5" /> {canWrite ? 'Edit' : 'View'}</button>
+                {canWrite && <button onClick={() => { setSelectedAgent(a.id); setPage('agent-config'); }} className="btn-ghost text-xs p-2" title="Test"><FlaskConical className="w-4 h-4" /></button>}
+                {canWrite && <button onClick={() => cloneAgent(a.id)} className="btn-ghost text-xs p-2" title="Clone"><Copy className="w-4 h-4" /></button>}
                 <button onClick={() => handleExport(a)} className="btn-ghost text-xs p-2" title="Export"><Download className="w-4 h-4" /></button>
-                <button onClick={() => handleArchive(a.id)} className="btn-ghost text-xs p-2" title="Archive"><Archive className="w-4 h-4" /></button>
-                <button onClick={() => setConfirmDelete(a.id)} className="btn-ghost text-xs p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-950" title="Delete"><Trash2 className="w-4 h-4" /></button>
+                {canWrite && <button onClick={() => handleArchive(a.id)} className="btn-ghost text-xs p-2" title="Archive"><Archive className="w-4 h-4" /></button>}
+                {canWrite && <button onClick={() => setConfirmDelete(a.id)} className="btn-ghost text-xs p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-950" title="Delete"><Trash2 className="w-4 h-4" /></button>}
               </div>
             </div>
           ))}
@@ -204,10 +218,15 @@ export function AgentLibraryPage() {
                     <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">{a.updatedAt.slice(0, 10)}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => handleEdit(a.id)} className="btn-ghost p-1.5" title="Edit" aria-label={`Edit ${a.displayName}`}><Edit3 className="w-4 h-4" /></button>
-                        <button onClick={() => cloneAgent(a.id)} className="btn-ghost p-1.5" title="Clone" aria-label={`Clone ${a.displayName}`}><Copy className="w-4 h-4" /></button>
+                        {canWrite && (a.status === 'published' ? (
+                          <button onClick={() => unpublishAgent(a.id)} className="btn-ghost p-1.5" title="Unpublish" aria-label={`Unpublish ${a.displayName}`}><Undo2 className="w-4 h-4" /></button>
+                        ) : (
+                          <button onClick={() => publishAgent(a.id)} className="btn-ghost p-1.5 text-brand-600" title="Publish" aria-label={`Publish ${a.displayName}`}><Upload className="w-4 h-4" /></button>
+                        ))}
+                        <button onClick={() => handleEdit(a.id)} className="btn-ghost p-1.5" title={canWrite ? 'Edit' : 'View'} aria-label={`${canWrite ? 'Edit' : 'View'} ${a.displayName}`}><Edit3 className="w-4 h-4" /></button>
+                        {canWrite && <button onClick={() => cloneAgent(a.id)} className="btn-ghost p-1.5" title="Clone" aria-label={`Clone ${a.displayName}`}><Copy className="w-4 h-4" /></button>}
                         <button onClick={() => handleExport(a)} className="btn-ghost p-1.5" title="Export" aria-label={`Export ${a.displayName}`}><Download className="w-4 h-4" /></button>
-                        <button onClick={() => setConfirmDelete(a.id)} className="btn-ghost p-1.5 text-red-500" title="Delete" aria-label={`Delete ${a.displayName}`}><Trash2 className="w-4 h-4" /></button>
+                        {canWrite && <button onClick={() => setConfirmDelete(a.id)} className="btn-ghost p-1.5 text-red-500" title="Delete" aria-label={`Delete ${a.displayName}`}><Trash2 className="w-4 h-4" /></button>}
                       </div>
                     </td>
                   </tr>

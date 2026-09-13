@@ -4,6 +4,14 @@ import { useStore, newAgentSkeleton } from '@/store';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import { isHttpNodeType, newWebhookSecret } from '@/lib/http';
+import { isPublishedAgent } from '@/lib/agents';
+import { allowedEnvironmentIds } from '@/lib/environments';
+import { canRole } from '@/lib/roles';
+import { isStubNodeType, LIVE_TRIGGERS } from '@/lib/nodes';
+import { LIVE_TOOL_HELP } from '@/lib/tools';
+import { schemaFromInput } from '@/lib/runInput';
+import { versionDiff } from '@/lib/versions';
+import type { InputFieldSchema, WorkflowVersion } from '@/types';
 import { formatRunOutput } from '@/lib/output';
 import {
   PROMPT_VARIABLES,
@@ -49,6 +57,7 @@ interface Props {
 
 export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate, onDuplicate, onDelete, onClose, onCollapse }: Props) {
   const agents = useStore((s) => s.agents);
+  const workflowEnv = useStore((s) => s.workflows.find((w) => w.id === workflowId)?.environment ?? s.environment);
   const setPage = useStore((s) => s.setPage);
   const setSelectedAgent = useStore((s) => s.setSelectedAgent);
   const createAgent = useStore((s) => s.createAgent);
@@ -58,6 +67,9 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
   const pendingApproval = useStore((s) => s.pendingApproval);
   const approveRun = useStore((s) => s.approveRun);
   const rejectRun = useStore((s) => s.rejectRun);
+  const role = useStore((s) => s.currentUser.role);
+  const canWriteAgents = canRole(role, 'agents.write');
+  const canApprove = canRole(role, 'runs.approve');
   const [tab, setTab] = useState<Tab>('agent');
 
   const data = selectedNode.data as WorkflowNodeData;
@@ -70,10 +82,16 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
     onUpdate({ config: { ...cfg, ...patch } });
   };
 
+  const bindableAgents = agents.filter((a) => (isPublishedAgent(a) || a.id === data.agentId) && (!workflowEnv || !a.environment || a.environment === workflowEnv));
+
   const bindAgent = (id: string) => {
     const ag = useStore.getState().agents.find((a) => a.id === id);
     if (!ag) {
       onUpdate({ agentId: '', status: 'not-configured' });
+      return;
+    }
+    if (!isPublishedAgent(ag)) {
+      addToast('Publish this agent before using it in a workflow', 'error');
       return;
     }
     const bindings: InputBinding[] = ag.inputs.map((inp) => {
@@ -96,9 +114,9 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
   const handleCreateAgent = () => {
     const created = { ...newAgentSkeleton(), persisted: true };
     createAgent(created);
-    bindAgent(created.id);
     setSelectedAgent(created.id);
-    addToast('New agent created and bound to this node', 'success');
+    setPage('agent-config');
+    addToast('Configure the agent, publish it, then bind it on this node', 'info');
   };
 
   const visibleTabs = useMemo(() => {
@@ -147,10 +165,10 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
             <pre className="max-h-40 overflow-auto rounded-md bg-white dark:bg-slate-950 px-2 py-1.5 text-[11px] font-mono whitespace-pre-wrap break-words text-slate-700 dark:text-slate-200">
               {formatRunOutput(pendingApproval?.nodeId === selectedNode.id ? pendingApproval.reviewOutput ?? runOutput : runOutput) || 'No output yet'}
             </pre>
-            {pendingApproval?.nodeId === selectedNode.id && (
+            {canApprove && pendingApproval?.nodeId === selectedNode.id && (
               <div className="flex gap-2">
-                <button type="button" onClick={rejectRun} className="btn-danger text-xs flex-1 justify-center">Reject</button>
-                <button type="button" onClick={approveRun} className="btn-primary text-xs flex-1 justify-center">Approve</button>
+                <button type="button" onClick={() => rejectRun()} className="btn-danger text-xs flex-1 justify-center">Reject</button>
+                <button type="button" onClick={() => approveRun()} className="btn-primary text-xs flex-1 justify-center">Approve</button>
               </div>
             )}
           </div>
@@ -168,14 +186,17 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
               <>
                 <Field label="Bound Agent">
                   <select className="input" value={data.agentId ?? ''} onChange={(e) => bindAgent(e.target.value)}>
-                    <option value="">Select agent...</option>
-                    {agents.map((a) => (
-                      <option key={a.id} value={a.id}>{a.displayName} · {a.type}</option>
+                    <option value="">Select a published agent...</option>
+                    {bindableAgents.map((a) => (
+                      <option key={a.id} value={a.id}>{a.displayName} · {a.type}{a.status !== 'published' ? ' (unpublished)' : ''}</option>
                     ))}
                   </select>
                 </Field>
+                {agent && !isPublishedAgent(agent) && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400">This agent is not published. Publish it in the library before running the workflow.</p>
+                )}
                 <div className="flex gap-2">
-                  <button onClick={handleCreateAgent} className="btn-secondary text-xs flex-1 justify-center"><Plus className="w-3.5 h-3.5" /> New agent</button>
+                  {canWriteAgents && <button onClick={handleCreateAgent} className="btn-secondary text-xs flex-1 justify-center"><Plus className="w-3.5 h-3.5" /> New agent</button>}
                   {agent && (
                     <button
                       onClick={() => { setSelectedAgent(agent.id); setPage('agent-config'); }}
@@ -215,7 +236,39 @@ export function NodeInspector({ selectedNode, nodes, edges, workflowId, onUpdate
                 <Field label="Or iterate path on previous output">
                   <input className="input font-mono text-xs" placeholder="testCases" value={cfg.loopPath ?? ''} onChange={(e) => setCfg({ loopPath: e.target.value })} />
                 </Field>
+                <p className="text-[11px] text-slate-400">The nodes after this loop run once per item. Use {'{{loop_item}}'} and {'{{loop_index}}'} in those nodes.</p>
               </>
+            )}
+            {(data.nodeType === 'transform' || data.nodeType === 'map' || data.nodeType === 'output') && (
+              <Field label="Template">
+                <textarea
+                  className="input font-mono text-xs min-h-20"
+                  placeholder='{"title":"{{previous_agent_output.title}}"}'
+                  value={cfg.expression ?? ''}
+                  onChange={(e) => setCfg({ expression: e.target.value })}
+                />
+                <p className="text-[11px] text-slate-400 mt-1">Interpolated JSON or text. Blank keeps the previous output.</p>
+              </Field>
+            )}
+            {data.nodeType === 'filter' && (
+              <Field label="Keep items when">
+                <input
+                  className="input font-mono text-xs"
+                  placeholder="{{previous_agent_output.severity}} == high"
+                  value={cfg.expression ?? ''}
+                  onChange={(e) => setCfg({ expression: e.target.value })}
+                />
+              </Field>
+            )}
+            {data.nodeType === 'json-parser' && (
+              <Field label="Optional path">
+                <input className="input font-mono text-xs" placeholder="datasets" value={cfg.loopPath ?? ''} onChange={(e) => setCfg({ loopPath: e.target.value })} />
+              </Field>
+            )}
+            {isStubNodeType(data.nodeType) && (
+              <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 rounded-lg px-3 py-2">
+                This node type does not run yet. The engine will pass the previous output through.
+              </p>
             )}
             {data.nodeType === 'approval' && (
               <Field label="Approver">
@@ -500,7 +553,7 @@ function ToolsTab({ agent, cfg, setCfg }: { agent: Agent | undefined; cfg: NodeR
   const enabled = new Set(cfg.enabledToolIds ?? agent.tools.filter((t) => t.enabled).map((t) => t.id));
   return (
     <div className="space-y-2">
-      <p className="text-xs text-slate-500">Tools enabled for this node. Library defaults are used until you toggle one.</p>
+      <p className="text-xs text-slate-500">{LIVE_TOOL_HELP} Library defaults are used until you toggle one.</p>
       {agent.tools.length === 0 && <p className="text-xs text-slate-400">No tools on this agent. Add them in the Agent Library.</p>}
       {agent.tools.map((t) => {
         const on = enabled.has(t.id);
@@ -678,7 +731,7 @@ function HttpRequestFields({ cfg, setCfg }: { cfg: NodeRuntimeConfig; setCfg: (p
 
 export function WorkflowSettingsPanel({
   name, description, triggerType, defaultInput, failurePolicy, maxExecutionTimeSec,
-  webhookSecret, scheduleCron, workflowId, onChange, onClose, onCollapse,
+  webhookSecret, scheduleCron, workflowId, environment, inputSchema, versions, onChange, onClose, onCollapse,
 }: {
   name: string;
   description: string;
@@ -689,11 +742,19 @@ export function WorkflowSettingsPanel({
   webhookSecret?: string;
   scheduleCron?: string;
   workflowId: string;
+  environment: string;
+  inputSchema?: InputFieldSchema[];
+  versions?: WorkflowVersion[];
   onChange: (patch: Record<string, unknown>) => void;
   onClose?: () => void;
   onCollapse?: () => void;
 }) {
   const addToast = useStore((s) => s.addToast);
+  const environments = useStore((s) => s.environments);
+  const currentUser = useStore((s) => s.currentUser);
+  const restoreWorkflowVersion = useStore((s) => s.restoreWorkflowVersion);
+  const workflow = useStore((s) => s.workflows.find((w) => w.id === workflowId));
+  const schema = inputSchema?.length ? inputSchema : schemaFromInput(defaultInput);
   const base = import.meta.env.VITE_SUPABASE_URL as string | undefined;
   const webhookUrl = base
     ? `${base.replace(/\/$/, '')}/functions/v1/workflow-webhook?workflowId=${encodeURIComponent(workflowId)}`
@@ -733,14 +794,21 @@ export function WorkflowSettingsPanel({
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         <Field label="Name"><input className="input" value={name} onChange={(e) => onChange({ name: e.target.value })} /></Field>
         <Field label="Description"><textarea className="input min-h-16" value={description} onChange={(e) => onChange({ description: e.target.value })} /></Field>
+        <Field label="Environment">
+          <select className="input" value={environment} onChange={(e) => onChange({ environment: e.target.value })}>
+            {environments.filter((env) => env.id === environment || allowedEnvironmentIds(currentUser, environments).includes(env.id)).map((env) => (
+              <option key={env.id} value={env.id}>{env.name}</option>
+            ))}
+          </select>
+          <p className="text-[11px] text-slate-400 mt-1">Changing this moves this workflow. Use Deploy on the toolbar to copy it into another environment.</p>
+        </Field>
         <Field label="Trigger">
           <select className="input" value={triggerType} onChange={(e) => setTrigger(e.target.value)}>
-            <option value="manual">Manual</option>
-            <option value="scheduled">Scheduled</option>
-            <option value="api">API</option>
-            <option value="webhook">Webhook</option>
-            <option value="azure-devops-workitem">Azure DevOps work item</option>
-            <option value="github-pr">GitHub PR</option>
+            {LIVE_TRIGGERS.map((trigger) => (
+              <option key={trigger} value={trigger}>
+                {trigger === 'azure-devops-workitem' ? 'Azure DevOps work item' : trigger === 'github-pr' ? 'GitHub PR' : trigger[0].toUpperCase() + trigger.slice(1)}
+              </option>
+            ))}
           </select>
         </Field>
         {(triggerType === 'webhook' || triggerType === 'api' || triggerType === 'azure-devops-workitem' || triggerType === 'github-pr') && (
@@ -764,7 +832,7 @@ export function WorkflowSettingsPanel({
         {triggerType === 'scheduled' && (
           <Field label="Schedule">
             <input className="input font-mono text-xs" placeholder="every 15m or 0 6 * * *" value={scheduleCron ?? ''} onChange={(e) => onChange({ scheduleCron: e.target.value })} />
-            <p className="text-[11px] text-slate-400 mt-1">Use every 15m or a 5-field UTC cron. Fires while the studio is open, or when workflow-schedule is pinged.</p>
+            <p className="text-[11px] text-slate-400 mt-1">Use every 15m or a 5-field UTC cron. The Run button always runs in this browser. Scheduled and webhook runs execute on the server when workflow-schedule or workflow-webhook is pinged.</p>
           </Field>
         )}
         <Field label="Failure policy">
@@ -780,6 +848,62 @@ export function WorkflowSettingsPanel({
         <Field label="Default run input">
           <textarea className="input font-mono text-xs min-h-28" value={defaultInput} onChange={(e) => onChange({ defaultInput: e.target.value })} />
         </Field>
+        <div>
+          <p className="label">Run input fields</p>
+          <p className="text-[11px] text-slate-400 mb-2">These become the form on Run. Save a default JSON first, or add fields here.</p>
+          <div className="space-y-2">
+            {schema.map((field, index) => (
+              <div key={`${field.key}-${index}`} className="flex gap-1">
+                <input
+                  className="input text-xs"
+                  value={field.key}
+                  aria-label={`Field ${index + 1} name`}
+                  onChange={(e) => {
+                    const next = schema.map((item, i) => i === index ? { ...item, key: e.target.value } : item);
+                    onChange({ inputSchema: next });
+                  }}
+                />
+                <select
+                  className="input w-24 text-xs"
+                  value={field.type}
+                  aria-label={`Field ${field.key} type`}
+                  onChange={(e) => {
+                    const next = schema.map((item, i) => i === index ? { ...item, type: e.target.value as InputFieldSchema['type'] } : item);
+                    onChange({ inputSchema: next });
+                  }}
+                >
+                  <option value="string">text</option>
+                  <option value="number">number</option>
+                  <option value="boolean">boolean</option>
+                  <option value="json">json</option>
+                </select>
+                <button type="button" className="btn-ghost p-1" aria-label={`Remove ${field.key}`} onClick={() => onChange({ inputSchema: schema.filter((_, i) => i !== index) })}>
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+            <button type="button" className="btn-secondary text-xs" onClick={() => onChange({ inputSchema: [...schema, { key: 'field', type: 'string' }] })}>
+              Add field
+            </button>
+          </div>
+        </div>
+        {!!versions?.length && (
+          <div>
+            <p className="label">Saved versions</p>
+            <ul className="space-y-2">
+              {versions.slice(0, 8).map((version) => {
+                const diff = workflow ? versionDiff(workflow, version) : { added: [], removed: [] };
+                return (
+                  <li key={version.savedAt} className="rounded-lg bg-slate-50 dark:bg-slate-800/50 p-2 text-xs">
+                    <p className="font-medium text-slate-800 dark:text-slate-100">{version.savedAt.slice(0, 16)} · {version.savedBy}</p>
+                    <p className="text-slate-500">{version.nodeCount} nodes{diff.added.length ? ` · +${diff.added.join(', ')}` : ''}{diff.removed.length ? ` · -${diff.removed.join(', ')}` : ''}</p>
+                    <button type="button" className="btn-secondary text-xs mt-1" onClick={() => restoreWorkflowVersion(workflowId, version.savedAt)}>Restore</button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
       </div>
     </aside>
   );

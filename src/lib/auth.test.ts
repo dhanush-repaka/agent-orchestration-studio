@@ -13,7 +13,7 @@ describe('auth', () => {
       id: 'abc-123',
       email: 'dhanush@qefoundry.com',
       name: 'Dhanush Repaka',
-      role: 'Administrator',
+      role: 'Viewer',
     });
   });
 
@@ -32,6 +32,9 @@ describe('auth', () => {
 
   it('does not treat /login as a studio page', () => {
     expect(pageFromPath('/login')).toBe('dashboard');
-    expect(pageFromPath('/workflows')).toBe('workflow-builder');
+    expect(pageFromPath('/workflows')).toBe('workflows');
+    expect(pageFromPath('/workflows/builder')).toBe('workflow-builder');
+    expect(pageFromPath('/approvals')).toBe('approvals');
+    expect(pageFromPath('/runs/compare')).toBe('run-compare');
   });
 });

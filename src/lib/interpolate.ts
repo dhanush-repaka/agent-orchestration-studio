@@ -5,6 +5,8 @@ export interface InterpContext {
   knowledge?: string;
   nodes: Record<string, { label: string; output: unknown }>;
   inputs?: Record<string, unknown>;
+  loopItem?: unknown;
+  loopIndex?: number;
 }
 
 export function parseJson(value: string | undefined, fallback: unknown = {}): unknown {
@@ -66,6 +68,12 @@ export function interpolate(template: string, ctx: InterpContext): string {
     if (key === 'knowledge_context') return ctx.knowledge ?? '';
     if (key === 'current_date') return new Date().toISOString();
     if (key === 'environment') return ctx.environment ?? '';
+    if (key === 'loop_item' || key === 'loopItem') return stringify(ctx.loopItem);
+    if (key === 'loop_index' || key === 'loopIndex') return ctx.loopIndex == null ? '' : String(ctx.loopIndex);
+    if (key.startsWith('loop_item.') || key.startsWith('loopItem.')) {
+      const path = key.slice(key.indexOf('.') + 1);
+      return stringify(getByPath(ctx.loopItem, path));
+    }
     if (key.startsWith('workflow.')) return stringify(getByPath(ctx.workflowInput, key.slice('workflow.'.length)));
     if (key.startsWith('inputs.')) return stringify(getByPath(ctx.inputs, key.slice('inputs.'.length)));
     if (key.startsWith('nodes.')) {
@@ -95,6 +103,10 @@ export function evaluateCondition(expression: string, ctx: InterpContext): boole
       case '!=': return a !== b;
       default: return a === b;
     }
+  }
+  const textCmp = interpolated.match(/^\s*(.*?)\s*(==|!=)\s*(.*?)\s*$/);
+  if (textCmp) {
+    return textCmp[2] === '==' ? textCmp[1] === textCmp[3] : textCmp[1] !== textCmp[3];
   }
   const lower = interpolated.toLowerCase();
   if (['true', 'yes', '1'].includes(lower)) return true;

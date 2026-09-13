@@ -1,4 +1,5 @@
 import { useStore } from '@/store';
+import { ApprovalActions } from '@/components/ApprovalActions';
 import { StatusBadge } from '@/components/StatusBadge';
 import { supabase } from '@/lib/supabase';
 import {
@@ -7,17 +8,22 @@ import {
 } from 'lucide-react';
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import type { WorkflowRun } from '@/types';
+import { envLabel, inCurrentEnvironment } from '@/lib/environments';
+import { isServerTriggered, siblingRuns } from '@/lib/compareRuns';
 
 type RealtimeStatus = 'connecting' | 'live' | 'offline';
 
 export function WorkflowRunsPage() {
-  const runs = useStore((s) => s.runs);
+  const environment = useStore((s) => s.environment);
+  const envDefs = useStore((s) => s.environments);
+  const allRuns = useStore((s) => s.runs);
+  const runs = allRuns.filter((r) => inCurrentEnvironment(r.environment, environment));
   const setPage = useStore((s) => s.setPage);
   const setSelectedRun = useStore((s) => s.setSelectedRun);
+  const setCompareRuns = useStore((s) => s.setCompareRuns);
   const hydrateRuns = useStore((s) => s.hydrateRuns);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [envFilter, setEnvFilter] = useState('all');
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('connecting');
   const [refreshing, setRefreshing] = useState(false);
 
@@ -62,19 +68,13 @@ export function WorkflowRunsPage() {
     return { running, completed, failed, totalTokens, totalCost };
   }, [runs]);
 
-  const environments = useMemo(() => {
-    const set = new Set(runs.map((r) => r.environment));
-    return ['all', ...Array.from(set)];
-  }, [runs]);
-
   const filtered = useMemo(() => {
     return runs.filter((r) => {
       if (search && !r.workflowName.toLowerCase().includes(search.toLowerCase())) return false;
       if (statusFilter !== 'all' && r.status !== statusFilter) return false;
-      if (envFilter !== 'all' && r.environment !== envFilter) return false;
       return true;
     });
-  }, [runs, search, statusFilter, envFilter]);
+  }, [runs, search, statusFilter]);
 
   const summaryCards = [
     { key: 'total', label: 'Total Runs', icon: PlayCircle, value: runs.length, color: 'text-sky-600 dark:text-sky-400', bg: 'bg-sky-50 dark:bg-sky-950' },
@@ -98,7 +98,7 @@ export function WorkflowRunsPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Workflow Runs</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">{runs.length} runs · Monitor and inspect executions</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">{runs.length} runs in {envLabel(environment, envDefs)} · Monitor and inspect executions</p>
         </div>
         <div className="flex items-center gap-3">
           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 ${rt.text}`}>
@@ -143,11 +143,6 @@ export function WorkflowRunsPage() {
             <option value="cancelled">Cancelled</option>
             <option value="waiting-approval">Waiting Approval</option>
           </select>
-          <select className="input w-auto" value={envFilter} onChange={(e) => setEnvFilter(e.target.value)} aria-label="Filter runs by environment">
-            {environments.map((e) => (
-              <option key={e} value={e}>{e === 'all' ? 'All Environments' : e.charAt(0).toUpperCase() + e.slice(1)}</option>
-            ))}
-          </select>
         </div>
       </div>
 
@@ -178,15 +173,43 @@ export function WorkflowRunsPage() {
                       <p className="font-medium text-slate-900 dark:text-white">{r.workflowName}</p>
                       <p className="text-xs text-slate-500 dark:text-slate-400">v{r.workflowVersion}</p>
                     </td>
-                    <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
-                    <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.triggeredBy}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col items-start gap-2">
+                        <StatusBadge status={r.status} />
+                        <ApprovalActions runId={r.id} />
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
+                      <div className="flex flex-col gap-1">
+                        <span>{r.triggeredBy}</span>
+                        {isServerTriggered(r.triggeredBy) && (
+                          <span className="badge w-fit bg-sky-50 dark:bg-sky-950 text-sky-700 dark:text-sky-300">Server</span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3"><span className="badge bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 capitalize">{r.environment}</span></td>
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-300 whitespace-nowrap">{formatRelative(r.startTime)}</td>
-                    <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.durationMs ? `${(r.durationMs / 1000).toFixed(1)}s` : r.status === 'running' ? <span className="text-amber-600 dark:text-amber-400">in progress…</span> : '—'}</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.durationMs ? `${(r.durationMs / 1000).toFixed(1)}s` : r.status === 'running' || r.status === 'waiting-approval' ? <span className={r.status === 'waiting-approval' ? 'text-purple-600 dark:text-purple-400' : 'text-amber-600 dark:text-amber-400'}>{r.status === 'waiting-approval' ? 'waiting…' : 'in progress…'}</span> : '—'}</td>
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.totalTokens > 0 ? r.totalTokens.toLocaleString() : '—'}</td>
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.estimatedCost > 0 ? `$${r.estimatedCost.toFixed(2)}` : '—'}</td>
                     <td className="px-4 py-3 text-right">
-                      <button className="btn-ghost p-1.5" aria-label={`Open run ${r.id}`}><ArrowRight className="w-4 h-4" /></button>
+                      <div className="flex justify-end gap-1">
+                        {siblingRuns(r, allRuns).length > 0 && (
+                          <button
+                            type="button"
+                            className="btn-ghost text-xs"
+                            aria-label={`Compare ${r.workflowName}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const peer = siblingRuns(r, allRuns)[0];
+                              setCompareRuns(r.id, peer?.id);
+                            }}
+                          >
+                            Compare
+                          </button>
+                        )}
+                        <button className="btn-ghost p-1.5" aria-label={`Open run ${r.id}`}><ArrowRight className="w-4 h-4" /></button>
+                      </div>
                     </td>
                   </tr>
                 ))}

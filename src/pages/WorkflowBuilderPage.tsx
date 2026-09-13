@@ -4,6 +4,7 @@ import {
   addEdge, useNodesState, useEdgesState, type Connection, type Node,
   type Edge, BackgroundVariant, ConnectionMode, type NodeMouseHandler,
   type EdgeMouseHandler, type OnNodesChange, type OnEdgesChange,
+  type FinalConnectionState, MarkerType, ConnectionLineType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useStore, newAgentSkeleton, newWorkflowSkeleton } from '@/store';
@@ -12,10 +13,18 @@ import { RunLivePanel } from '@/components/RunLivePanel';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import { NodeInspector, WorkflowSettingsPanel, defaultNodeConfig } from '@/components/NodeInspector';
-import { sanitizeEdges } from '@/lib/graph';
+import { DeployWorkflowModal } from '@/components/DeployWorkflowModal';
+import { BRANCH_NODE_TYPES, sanitizeEdges } from '@/lib/graph';
+import { isPublishedAgent } from '@/lib/agents';
+import { canAccessEnvironment, envLabel } from '@/lib/environments';
+import { canRole } from '@/lib/roles';
+import {
+  LIVE_CONTROL_PALETTE, LIVE_DATA_PALETTE, LIVE_INTEGRATION_PALETTE,
+  STUB_CONTROL_PALETTE, STUB_DATA_PALETTE, STUB_INTEGRATION_PALETTE,
+} from '@/lib/nodes';
+import { fieldsFromInput, fieldsFromSchema, inputFromFields, type RunInputField } from '@/lib/runInput';
 import { applyStudioDefaults, codeChangeIsLinked, USER_STORY_WORKFLOW_ID } from '@/lib/workflowSetup';
 import {
-  CONTROL_PALETTE, DATA_PALETTE, INTEGRATION_PALETTE,
   type WorkflowNodeData, type NodeKind, type WorkflowNode, type WorkflowEdge,
   type NodePaletteItem, type NodeRuntimeConfig,
 } from '@/types';
@@ -23,7 +32,7 @@ import {
   Play, Save, Download, Upload, Copy, Lock, Undo2, Redo2,
   Plus, X, Search, CheckCircle2, AlertCircle, AlertTriangle,
   UserCheck, MousePointerClick, PanelLeftClose, PanelLeftOpen,
-  PanelRightClose, PanelRightOpen,
+  PanelRightClose, PanelRightOpen, ArrowLeft, Rocket,
 } from 'lucide-react';
 
 const nodeTypes = { studioNode: StudioNode };
@@ -32,9 +41,12 @@ let nodeIdCounter = 1000;
 function getNodeId() { return `n${++nodeIdCounter}`; }
 
 const STATIC_PALETTE_GROUPS: { title: string; kind: NodeKind; items: NodePaletteItem[] }[] = [
-  { title: 'Control', kind: 'control', items: CONTROL_PALETTE },
-  { title: 'Data', kind: 'data', items: DATA_PALETTE },
-  { title: 'Integrations', kind: 'integration', items: INTEGRATION_PALETTE },
+  { title: 'Control', kind: 'control', items: LIVE_CONTROL_PALETTE },
+  { title: 'Data', kind: 'data', items: LIVE_DATA_PALETTE },
+  { title: 'Integrations', kind: 'integration', items: LIVE_INTEGRATION_PALETTE },
+];
+const STUB_PALETTE_GROUPS: { title: string; kind: NodeKind; items: NodePaletteItem[] }[] = [
+  { title: 'Unavailable', kind: 'control', items: [...STUB_CONTROL_PALETTE, ...STUB_DATA_PALETTE, ...STUB_INTEGRATION_PALETTE] },
 ];
 
 const AGENT_ICONS: Record<string, string> = {
@@ -80,6 +92,13 @@ function BuilderInner() {
   const runningWorkflowId = useStore((s) => s.runningWorkflowId);
   const runStatus = useStore((s) => s.runStatus);
   const agents = useStore((s) => s.agents);
+  const environments = useStore((s) => s.environments);
+  const currentUser = useStore((s) => s.currentUser);
+  const setEnvironment = useStore((s) => s.setEnvironment);
+  const canWriteWf = canRole(currentUser.role, 'workflows.write');
+  const canRunWf = canRole(currentUser.role, 'workflows.run');
+  const canApproveWf = canRole(currentUser.role, 'runs.approve');
+  const canWriteAgents = canRole(currentUser.role, 'agents.write');
   const { screenToFlowPosition } = useReactFlow();
 
   const wf = workflows.find((w) => w.id === selectedWorkflowId) ?? workflows[0];
@@ -94,6 +113,9 @@ function BuilderInner() {
   const [paletteSearch, setPaletteSearch] = useState('');
   const [showRunModal, setShowRunModal] = useState(false);
   const [runInput, setRunInput] = useState('');
+  const [runFields, setRunFields] = useState<RunInputField[]>([]);
+  const [rawRunJson, setRawRunJson] = useState(false);
+  const [showStubNodes, setShowStubNodes] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [locked, setLocked] = useState(false);
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([]);
@@ -101,6 +123,7 @@ function BuilderInner() {
   const [configs, setConfigs] = useState<Record<string, NodeConfig>>({});
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true); // builder side docks
+  const [deployOpen, setDeployOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
@@ -109,6 +132,13 @@ function BuilderInner() {
     const next = applyStudioDefaults(wf);
     setWorkflowGraph(wf.id, next.nodes, next.edges);
   }, [wf, setWorkflowGraph]);
+
+  useEffect(() => {
+    if (wf?.environment && canAccessEnvironment(currentUser, wf.environment, environments)) {
+      const current = useStore.getState().environment;
+      if (current !== wf.environment) setEnvironment(wf.environment);
+    }
+  }, [wf?.environment, currentUser, environments, setEnvironment]);
 
   // Sync nodes/edges when workflow changes
   useEffect(() => {
@@ -155,13 +185,67 @@ function BuilderInner() {
     setHistoryIdx((i) => i + 1);
   }, [historyIdx]);
 
-  const onConnect = useCallback((c: Connection) => {
+  const makeConnection = useCallback((c: Connection) => {
+    if (!c.source || !c.target || c.source === c.target) return;
     setEdges((eds) => {
-      const newEdges = addEdge({ ...c, animated: false }, eds);
+      const exists = eds.some((e) => (
+        e.source === c.source
+        && e.target === c.target
+        && (e.sourceHandle ?? null) === (c.sourceHandle ?? null)
+      ));
+      if (exists) return eds;
+      const newEdges = addEdge({
+        ...c,
+        id: `e-${c.source}-${c.target}-${c.sourceHandle ?? 'out'}-${Date.now()}`,
+        type: 'smoothstep',
+        animated: false,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: '#64748b' },
+        style: { stroke: '#64748b', strokeWidth: 2 },
+      }, eds);
       pushHistory(nodes, newEdges);
       return newEdges;
     });
   }, [nodes, setEdges, pushHistory]);
+
+  const onConnect = useCallback((c: Connection) => {
+    makeConnection(c);
+  }, [makeConnection]);
+
+  const isValidConnection = useCallback((c: Connection | Edge) => {
+    if (!c.source || !c.target || c.source === c.target) return false;
+    const src = nodes.find((n) => n.id === c.source);
+    const tgt = nodes.find((n) => n.id === c.target);
+    if (!src || !tgt) return false;
+    const fromType = (src.data as WorkflowNodeData).nodeType;
+    const toType = (tgt.data as WorkflowNodeData).nodeType;
+    if (fromType === 'end' || toType === 'start') return false;
+    return true;
+  }, [nodes]);
+
+  const onConnectEnd = useCallback((event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+    if (locked || state.isValid || !state.fromNode) return;
+    const point = 'changedTouches' in event ? event.changedTouches[0] : event;
+    const flowPos = screenToFlowPosition({ x: point.clientX, y: point.clientY });
+    const hit = nodes.find((n) => {
+      if (n.id === state.fromNode?.id) return false;
+      const width = n.measured?.width ?? 220;
+      const height = n.measured?.height ?? 88;
+      return flowPos.x >= n.position.x
+        && flowPos.x <= n.position.x + width
+        && flowPos.y >= n.position.y
+        && flowPos.y <= n.position.y + height;
+    });
+    if (!hit) return;
+    const fromType = (state.fromNode.data as WorkflowNodeData).nodeType;
+    const handle = state.fromHandle?.id
+      ?? (BRANCH_NODE_TYPES.has(fromType) ? null : 'out');
+    makeConnection({
+      source: state.fromNode.id,
+      target: hit.id,
+      sourceHandle: handle,
+      targetHandle: 'in',
+    });
+  }, [locked, nodes, screenToFlowPosition, makeConnection]);
 
   const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
     setSelectedNodeId(node.id);
@@ -182,14 +266,27 @@ function BuilderInner() {
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
+    e.dataTransfer.dropEffect = 'copy';
   }, []);
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    const raw = e.dataTransfer.getData('application/reactflow');
+    if (!canWriteWf) return;
+    const raw = e.dataTransfer.getData('application/reactflow') || e.dataTransfer.getData('text/plain');
     if (!raw || !wf) return;
-    const item = JSON.parse(raw) as NodePaletteItem;
+    let item: NodePaletteItem;
+    try {
+      item = JSON.parse(raw) as NodePaletteItem;
+    } catch {
+      return;
+    }
+    if (item.kind === 'agent') {
+      const agent = agents.find((a) => a.id === item.agentId);
+      if (!agent || !isPublishedAgent(agent)) {
+        addToast('Publish the agent before adding it to a workflow', 'error');
+        return;
+      }
+    }
     const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
     const matchingAgent = item.kind === 'agent'
       ? agents.find((a) => a.id === item.agentId)
@@ -212,39 +309,10 @@ function BuilderInner() {
     const newNodes = [...nodes, newNode];
     setNodes(newNodes);
     setConfigs((c) => ({ ...c, [newNode.id]: defaultConfig() }));
+    setSelectedNodeId(newNode.id);
+    setRightOpen(true);
     pushHistory(newNodes, edges);
-  }, [nodes, edges, wf, agents, setNodes, setConfigs, pushHistory, screenToFlowPosition]);
-
-  // Click-to-add from palette
-  const addNodeFromPalette = useCallback((item: NodePaletteItem) => {
-    if (!wf) return;
-    const matchingAgent = item.kind === 'agent'
-      ? agents.find((a) => a.id === item.agentId)
-      : undefined;
-    setNodes((nds) => {
-      const index = nds.length;
-      const position = { x: 80 + (index % 3) * 260, y: 80 + Math.floor(index / 3) * 150 };
-      const newNode: Node = {
-        id: getNodeId(),
-        type: 'studioNode',
-        position,
-        data: {
-          kind: item.kind,
-          nodeType: item.nodeType ?? item.type,
-          label: matchingAgent?.displayName ?? item.label,
-          agentType: matchingAgent?.type ?? item.agentType,
-          agentId: matchingAgent?.id,
-          icon: matchingAgent?.icon ?? item.icon,
-          status: item.kind === 'agent' ? (matchingAgent ? 'ready' : 'not-configured') : 'ready',
-          config: defaultConfig(),
-        } as WorkflowNodeData,
-      };
-      const newNodes = [...nds, newNode];
-      setConfigs((c) => ({ ...c, [newNode.id]: defaultConfig() }));
-      queueMicrotask(() => pushHistory(newNodes, edges));
-      return newNodes;
-    });
-  }, [edges, wf, agents, setNodes, setConfigs, pushHistory]);
+  }, [nodes, edges, wf, agents, setNodes, setConfigs, pushHistory, screenToFlowPosition, addToast, canWriteWf]);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const selectedEdge = edges.find((e) => e.id === selectedEdgeId);
@@ -299,15 +367,19 @@ function BuilderInner() {
     setEdges((eds) => eds.map((e) => e.id === selectedEdgeId ? { ...e, label } : e));
   }, [selectedEdgeId, setEdges]);
 
-  const handleSave = useCallback(() => {
+  const persistGraph = useCallback(() => {
     if (!wf) return;
     const nodesWithConfig = nodes.map((n) => {
       const d = n.data as WorkflowNodeData;
       return { ...n, data: { ...d, config: d.config ?? configs[n.id] ?? defaultConfig() } };
     });
     setWorkflowGraph(wf.id, nodesWithConfig as unknown as WorkflowNode[], edges as unknown as WorkflowEdge[]);
+  }, [wf, nodes, edges, configs, setWorkflowGraph]);
+
+  const handleSave = useCallback(() => {
+    persistGraph();
     addToast('Workflow saved', 'success');
-  }, [wf, nodes, edges, configs, setWorkflowGraph, addToast]);
+  }, [persistGraph, addToast]);
 
   const handleExport = useCallback(() => {
     if (!wf) return;
@@ -358,9 +430,13 @@ function BuilderInner() {
       if (d.nodeType !== 'start' && !edges.find((e) => e.target === n.id)) errors.push(`Node "${d.label}" has no incoming connection`);
       if (d.status === 'not-configured') errors.push(`Node "${d.label}" is not configured`);
       if (d.kind === 'agent' && !d.agentId) errors.push(`Node "${d.label}" has no agent bound`);
+      if (d.kind === 'agent' && d.agentId) {
+        const bound = agents.find((a) => a.id === d.agentId);
+        if (bound && !isPublishedAgent(bound)) errors.push(`Agent "${bound.displayName}" must be published before this workflow can run`);
+      }
     });
     return errors;
-  }, [nodes, edges]);
+  }, [nodes, edges, agents]);
 
   const handleValidate = useCallback(() => {
     const errors = validateWorkflow();
@@ -378,9 +454,10 @@ function BuilderInner() {
     }
     handleSave();
     setShowRunModal(false);
-    startRun(wf.id, runInput);
+    const payload = !rawRunJson && runFields.length ? inputFromFields(runFields, runInput) : runInput;
+    startRun(wf.id, payload);
     addToast('Workflow execution started', 'success');
-  }, [validateWorkflow, handleSave, startRun, wf, runInput, addToast]);
+  }, [validateWorkflow, handleSave, startRun, wf, runInput, runFields, rawRunJson, addToast]);
 
   const undo = useCallback(() => {
     if (historyIdx > 0) {
@@ -433,8 +510,10 @@ function BuilderInner() {
     return <div className="p-6 text-center text-slate-500">No workflow selected.</div>;
   }
 
-  const isRunning = runningWorkflowId === wf.id;
-  const agentPaletteItems: NodePaletteItem[] = agents.filter((a) => a.persisted !== false).map((a) => ({
+  const isRunning = !!wf && runningWorkflowId === wf.id;
+  const publishedAgents = agents.filter((a) => isPublishedAgent(a) && (!wf.environment || a.environment === wf.environment || !a.environment));
+  const draftAgents = agents.filter((a) => a.persisted !== false && a.status !== 'published' && a.status !== 'archived' && (!wf.environment || a.environment === wf.environment || !a.environment));
+  const agentPaletteItems: NodePaletteItem[] = publishedAgents.map((a) => ({
     type: 'agent',
     label: a.displayName,
     kind: 'agent',
@@ -446,10 +525,30 @@ function BuilderInner() {
   const filteredPalette = (items: NodePaletteItem[]) => items.filter((i) => i.label.toLowerCase().includes(paletteSearch.toLowerCase()));
   const approvalNodes = nodes.filter((n) => (n.data as WorkflowNodeData).nodeType === 'approval');
 
+  if (!wf) {
+    return (
+      <div className="h-full flex items-center justify-center p-8">
+        <div className="text-center space-y-3">
+          <p className="text-slate-600 dark:text-slate-300">No workflow selected.</p>
+          <button type="button" onClick={() => setPage('workflows')} className="btn-primary">Back to workflows</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
       <div className="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-2.5 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setPage('workflows')}
+          className="btn-ghost p-2 shrink-0"
+          title="Back to workflows"
+          aria-label="Back to workflows"
+        >
+          <ArrowLeft className="w-4 h-4" />
+        </button>
         <select
           value={wf.id}
           onChange={(e) => setSelectedWorkflow(e.target.value)}
@@ -465,25 +564,36 @@ function BuilderInner() {
         <button onClick={undo} disabled={historyIdx <= 0} className="btn-ghost p-2 shrink-0" title="Undo (Ctrl+Z)"><Undo2 className="w-4 h-4" /></button>
         <button onClick={redo} disabled={historyIdx >= history.length - 1} className="btn-ghost p-2 shrink-0" title="Redo (Ctrl+Y)"><Redo2 className="w-4 h-4" /></button>
         <button onClick={handleValidate} className="btn-ghost p-2 shrink-0" title="Validate"><CheckCircle2 className="w-4 h-4" /></button>
-        <button onClick={() => setLocked(!locked)} className={`btn-ghost p-2 shrink-0 ${locked ? 'text-amber-500' : ''}`} title="Lock editing"><Lock className="w-4 h-4" /></button>
+        <button onClick={() => canWriteWf && setLocked(!locked)} className={`btn-ghost p-2 shrink-0 ${locked || !canWriteWf ? 'text-amber-500' : ''}`} title="Lock editing" disabled={!canWriteWf}><Lock className="w-4 h-4" /></button>
         <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-1 shrink-0" />
-        <button onClick={handleSave} className="btn-secondary text-sm shrink-0" title="Save (Ctrl+S)" aria-label="Save workflow"><Save className="w-4 h-4" /> Save</button>
+        {canWriteWf && <button onClick={handleSave} className="btn-secondary text-sm shrink-0" title="Save (Ctrl+S)" aria-label="Save workflow"><Save className="w-4 h-4" /> Save</button>}
         <button onClick={handleExport} className="btn-secondary text-sm shrink-0"><Download className="w-4 h-4" /> Export</button>
-        <button onClick={() => fileInputRef.current?.click()} className="btn-secondary text-sm shrink-0"><Upload className="w-4 h-4" /> Import</button>
+        {canWriteWf && <button onClick={() => fileInputRef.current?.click()} className="btn-secondary text-sm shrink-0"><Upload className="w-4 h-4" /> Import</button>}
         <input ref={fileInputRef} type="file" accept=".json" onChange={handleFileImport} className="hidden" />
-        <button onClick={() => {
-          const created = newWorkflowSkeleton();
-          createWorkflow(created);
-          setSelectedWorkflow(created.id);
-          addToast('New workflow created', 'success');
-        }} className="btn-ghost p-2 shrink-0" title="New workflow"><Plus className="w-4 h-4" /></button>
-        <button onClick={() => cloneWorkflow(wf.id)} className="btn-ghost p-2 shrink-0" title="Clone"><Copy className="w-4 h-4" /></button>
+        {canWriteWf && (
+          <button onClick={() => {
+            const created = newWorkflowSkeleton();
+            createWorkflow(created);
+            setSelectedWorkflow(created.id);
+            addToast('New workflow created', 'success');
+          }} className="btn-ghost p-2 shrink-0" title="New workflow"><Plus className="w-4 h-4" /></button>
+        )}
+        {canWriteWf && <button onClick={() => cloneWorkflow(wf.id)} className="btn-ghost p-2 shrink-0" title="Clone in this environment"><Copy className="w-4 h-4" /></button>}
+        {canWriteWf && (
+          <button
+            onClick={() => { persistGraph(); setDeployOpen(true); }}
+            className="btn-ghost p-2 shrink-0"
+            title="Deploy to another environment"
+          >
+            <Rocket className="w-4 h-4" />
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2 shrink-0">
-          {pendingApproval && pendingApproval.workflowId === wf.id && (
+          {canApproveWf && pendingApproval && pendingApproval.workflowId === wf.id && (
             <>
               <span className="text-xs text-purple-600 dark:text-purple-300 truncate max-w-40">Approve: {pendingApproval.label}</span>
-              <button onClick={approveRun} className="btn-primary text-xs py-1.5"><UserCheck className="w-3.5 h-3.5" /> Approve</button>
-              <button onClick={rejectRun} className="btn-danger text-xs py-1.5">Reject</button>
+              <button onClick={() => approveRun()} className="btn-primary text-xs py-1.5"><UserCheck className="w-3.5 h-3.5" /> Approve</button>
+              <button onClick={() => rejectRun()} className="btn-danger text-xs py-1.5">Reject</button>
             </>
           )}
           {validationErrors.length > 0 && (
@@ -492,9 +602,16 @@ function BuilderInner() {
             </span>
           )}
           {isRunning ? (
-            <button onClick={cancelRun} className="btn-danger text-sm shrink-0" aria-label="Cancel run"><X className="w-4 h-4" /> Cancel Run</button>
+            canRunWf && <button onClick={cancelRun} className="btn-danger text-sm shrink-0" aria-label="Cancel run"><X className="w-4 h-4" /> Cancel Run</button>
           ) : (
-            <button onClick={() => { setRunInput(wf.defaultInput && wf.defaultInput !== '{}' ? wf.defaultInput : '{\n  "workItemId": \n}'); setShowRunModal(true); }} className="btn-primary text-sm shrink-0" aria-label="Open run workflow dialog"><Play className="w-4 h-4" /> Run Workflow</button>
+            canRunWf && <button onClick={() => {
+              const raw = wf.defaultInput && wf.defaultInput !== '{}' ? wf.defaultInput : '{\n  "workItemId": 21\n}';
+              setRunInput(raw);
+              const fields = fieldsFromSchema(wf.inputSchema, raw);
+              setRunFields(fields);
+              setRawRunJson(fields.length === 0);
+              setShowRunModal(true);
+            }} className="btn-primary text-sm shrink-0" aria-label="Open run workflow dialog"><Play className="w-4 h-4" /> Run Workflow</button>
           )}
         </div>
       </div>
@@ -553,23 +670,29 @@ function BuilderInner() {
               />
             </div>
             <p className="text-[10px] text-slate-400 mt-2 flex items-center gap-1">
-              <MousePointerClick className="w-3 h-3" /> Click or drag to add
+              <MousePointerClick className="w-3 h-3" /> Drag a node onto the canvas
             </p>
-            <button
-              onClick={() => {
-                const created = newAgentSkeleton();
-                createAgent(created);
-                setSelectedAgent(created.id);
-                setPage('agent-config');
-                addToast('Untitled agent created — configure it, then drop it on the canvas', 'success');
-              }}
-              className="btn-secondary w-full mt-2 text-xs justify-center"
-            >
-              <Plus className="w-3.5 h-3.5" /> New agent
-            </button>
+            <label className="flex items-center gap-2 mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+              <input type="checkbox" checked={showStubNodes} onChange={(e) => setShowStubNodes(e.target.checked)} />
+              Show nodes that do not run yet
+            </label>
+            {canWriteAgents && (
+              <button
+                onClick={() => {
+                  const created = newAgentSkeleton();
+                  createAgent(created);
+                  setSelectedAgent(created.id);
+                  setPage('agent-config');
+                  addToast('Untitled agent created — configure it, then drop it on the canvas', 'success');
+                }}
+                className="btn-secondary w-full mt-2 text-xs justify-center"
+              >
+                <Plus className="w-3.5 h-3.5" /> New agent
+              </button>
+            )}
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-4">
-            {[{ title: 'Agents', kind: 'agent' as NodeKind, items: agentPaletteItems }, ...STATIC_PALETTE_GROUPS].map((group) => {
+            {[{ title: 'Agents', kind: 'agent' as NodeKind, items: agentPaletteItems }, ...STATIC_PALETTE_GROUPS, ...(showStubNodes ? STUB_PALETTE_GROUPS : [])].map((group) => {
               const items = filteredPalette(group.items);
               if (items.length === 0) return null;
               return (
@@ -578,16 +701,27 @@ function BuilderInner() {
                   <div className="space-y-1">
                     {items.map((item) => (
                       <div
-                        key={item.type + item.label}
+                        key={`${item.type}-${item.agentId ?? item.label}`}
                         draggable
-                        onDragStart={(e) => e.dataTransfer.setData('application/reactflow', JSON.stringify(item))}
-                        onClick={() => addNodeFromPalette(item)}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('application/reactflow', JSON.stringify(item));
+                          e.dataTransfer.setData('text/plain', JSON.stringify(item));
+                          e.dataTransfer.effectAllowed = 'copy';
+                        }}
                         className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 hover:border-brand-400 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950 cursor-grab active:cursor-grabbing transition"
+                        title="Drag onto the canvas"
+                        role="option"
+                        aria-label={`Drag ${item.label} onto canvas`}
                       >
                         <Icon name={item.icon} className="w-4 h-4 text-slate-600 dark:text-slate-300" />
                         <span className="text-xs font-medium text-slate-700 dark:text-slate-200">{item.label}</span>
                       </div>
                     ))}
+                    {group.title === 'Agents' && draftAgents.length > 0 && !paletteSearch && (
+                      <p className="text-[10px] text-slate-400 pt-1">
+                        {draftAgents.length} draft agent{draftAgents.length === 1 ? '' : 's'} hidden until published
+                      </p>
+                    )}
                   </div>
                 </div>
               );
@@ -604,6 +738,8 @@ function BuilderInner() {
             onNodesChange={onNodesChangeWrap}
             onEdgesChange={onEdgesChangeWrap}
             onConnect={onConnect}
+            onConnectEnd={onConnectEnd}
+            isValidConnection={isValidConnection}
             onNodeClick={onNodeClick}
             onEdgeClick={onEdgeClick}
             onPaneClick={onPaneClick}
@@ -611,10 +747,19 @@ function BuilderInner() {
             onDragOver={onDragOver}
             nodeTypes={nodeTypes}
             connectionMode={ConnectionMode.Loose}
+            connectionRadius={48}
+            connectOnClick
+            connectionLineType={ConnectionLineType.SmoothStep}
+            connectionLineStyle={{ stroke: '#3479f6', strokeWidth: 2 }}
+            defaultEdgeOptions={{
+              type: 'smoothstep',
+              markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: '#64748b' },
+              style: { stroke: '#64748b', strokeWidth: 2 },
+            }}
             fitView
             snapToGrid
             snapGrid={[16, 16]}
-            nodesDraggable={!locked}
+            nodesDraggable={!locked && canWriteWf}
             nodesConnectable={!locked}
             elementsSelectable={!locked}
             deleteKeyCode={null}
@@ -721,11 +866,14 @@ function BuilderInner() {
             description={wf.description}
             triggerType={wf.triggerType}
             defaultInput={wf.defaultInput ?? '{}'}
+            inputSchema={wf.inputSchema}
+            versions={wf.versions}
             failurePolicy={wf.failurePolicy}
             maxExecutionTimeSec={wf.maxExecutionTimeSec}
             webhookSecret={wf.webhookSecret}
             scheduleCron={wf.scheduleCron}
             workflowId={wf.id}
+            environment={wf.environment}
             onChange={(patch) => updateWorkflow(wf.id, patch as Partial<typeof wf>)}
             onCollapse={() => setRightOpen(false)}
           />
@@ -749,7 +897,7 @@ function BuilderInner() {
                 </div>
                 <div className="card p-3 bg-slate-50 dark:bg-slate-800/50">
                   <p className="text-xs text-slate-500">Environment</p>
-                  <p className="text-sm font-medium text-slate-900 dark:text-white capitalize">{wf.environment}</p>
+                  <p className="text-sm font-medium text-slate-900 dark:text-white">{envLabel(wf.environment, environments)}</p>
                 </div>
                 <div className="card p-3 bg-slate-50 dark:bg-slate-800/50">
                   <p className="text-xs text-slate-500">Nodes</p>
@@ -761,16 +909,52 @@ function BuilderInner() {
                 </div>
               </div>
               <div>
-                <label className="label" htmlFor="run-workflow-input">Workflow Input</label>
-                <textarea
-                  className="input font-mono text-xs min-h-24"
-                  value={runInput}
-                  onChange={(e) => setRunInput(e.target.value)}
-                  placeholder='{"workItemId": 123}'
-                  aria-label="Workflow input JSON"
-                  id="run-workflow-input"
-                />
-                <p className="text-[11px] text-slate-400 mt-1">Enter the runtime input values for this execution (JSON format)</p>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="label" htmlFor="run-workflow-input">Workflow input</label>
+                  {runFields.length > 0 && (
+                    <button type="button" className="text-[11px] text-brand-600 dark:text-brand-400" onClick={() => setRawRunJson((v) => !v)}>
+                      {rawRunJson ? 'Use form' : 'Edit JSON'}
+                    </button>
+                  )}
+                </div>
+                {!rawRunJson && runFields.length > 0 ? (
+                  <div className="space-y-2">
+                    {runFields.map((field, index) => (
+                      <label key={field.key} className="block">
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400">{field.key}</span>
+                        {field.type === 'boolean' ? (
+                          <select
+                            className="input mt-1"
+                            value={field.value}
+                            onChange={(e) => setRunFields((prev) => prev.map((item, i) => i === index ? { ...item, value: e.target.value } : item))}
+                          >
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                          </select>
+                        ) : (
+                          <input
+                            className="input mt-1"
+                            type={field.type === 'number' ? 'number' : 'text'}
+                            value={field.value}
+                            onChange={(e) => setRunFields((prev) => prev.map((item, i) => i === index ? { ...item, value: e.target.value } : item))}
+                          />
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <textarea
+                    className="input font-mono text-xs min-h-24"
+                    value={runInput}
+                    onChange={(e) => setRunInput(e.target.value)}
+                    placeholder='{"workItemId": 123}'
+                    aria-label="Workflow input JSON"
+                    id="run-workflow-input"
+                  />
+                )}
+                <p className="text-[11px] text-slate-400 mt-1">
+                  {runFields.length ? 'Fields come from this workflow\'s default input.' : 'This workflow has no object-shaped default input, so JSON is used.'}
+                </p>
               </div>
               {approvalNodes.length > 0 && (
                 <div className="card p-3 bg-amber-50 dark:bg-amber-950 border-amber-200 dark:border-amber-800">
@@ -793,6 +977,9 @@ function BuilderInner() {
             </div>
           </div>
         </div>
+      )}
+      {deployOpen && wf && (
+        <DeployWorkflowModal workflowId={wf.id} onClose={() => setDeployOpen(false)} />
       )}
     </div>
   );

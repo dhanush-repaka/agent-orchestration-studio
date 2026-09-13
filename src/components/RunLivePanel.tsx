@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '@/store';
 import { formatRunOutput } from '@/lib/output';
+import { canRole } from '@/lib/roles';
 import { PlaywrightReportButton } from '@/components/PlaywrightReportButton';
 import { StatusBadge } from '@/components/StatusBadge';
 import {
@@ -14,6 +15,7 @@ export function RunLivePanel({
   workflowId: string;
   selectedNodeId: string | null;
 }) {
+  const canApprove = canRole(useStore((s) => s.currentUser.role), 'runs.approve');
   const runningWorkflowId = useStore((s) => s.runningWorkflowId);
   const serverRunId = useStore((s) => s.serverRunId);
   const runStatus = useStore((s) => s.runStatus);
@@ -85,14 +87,16 @@ export function RunLivePanel({
                 {formatRunOutput(pending.reviewOutput) || 'No upstream output was captured for this step.'}
               </pre>
             </div>
-            <div className="flex items-center gap-2 justify-end">
-              <button type="button" onClick={rejectRun} className="btn-danger text-sm" aria-label="Reject approval and fail run">
-                <XCircle className="w-4 h-4" /> Reject
-              </button>
-              <button type="button" onClick={approveRun} className="btn-primary text-sm" aria-label="Approve and continue workflow">
-                <CheckCircle2 className="w-4 h-4" /> Approve
-              </button>
-            </div>
+            {canApprove && (
+              <div className="flex items-center gap-2 justify-end">
+                <button type="button" onClick={() => rejectRun()} className="btn-danger text-sm" aria-label="Reject approval and fail run">
+                  <XCircle className="w-4 h-4" /> Reject
+                </button>
+                <button type="button" onClick={() => approveRun()} className="btn-primary text-sm" aria-label="Approve and continue workflow">
+                  <CheckCircle2 className="w-4 h-4" /> Approve
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

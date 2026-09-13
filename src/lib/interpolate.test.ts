@@ -28,6 +28,23 @@ describe('interpolate', () => {
   it('reads named inputs', () => {
     expect(interpolate('{{inputs.topic}}', ctx)).toBe('Playwright');
   });
+
+  it('reads loop item fields', () => {
+    expect(interpolate('{{loop_item.title}} #{{loop_index}}', { ...ctx, loopItem: { title: 'A' }, loopIndex: 2 })).toBe('A #2');
+  });
+});
+
+describe('evaluateCondition text', () => {
+  it('compares interpolated strings', () => {
+    expect(evaluateCondition('{{workflow.severity}} == high', {
+      ...ctx,
+      workflowInput: { severity: 'high' },
+    })).toBe(true);
+    expect(evaluateCondition('{{workflow.severity}} == high', {
+      ...ctx,
+      workflowInput: { severity: 'low' },
+    })).toBe(false);
+  });
 });
 
 describe('parseJson and getByPath', () => {

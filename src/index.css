@@ -65,6 +65,35 @@
 .react-flow__edge-path {
   stroke-width: 2;
 }
+.react-flow__connection-path {
+  stroke: #3479f6;
+  stroke-width: 2;
+}
+.react-flow__handle.studio-handle {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  border-color: #fff;
+  background: #64748b;
+  z-index: 2;
+}
+.react-flow__handle.studio-handle-out {
+  background: #3479f6;
+}
+.react-flow__handle.studio-handle-true {
+  background: #10b981;
+}
+.react-flow__handle.studio-handle-false {
+  background: #ef4444;
+}
+.dark .react-flow__handle.studio-handle {
+  border-color: #0f172a;
+}
+.react-flow__handle.studio-handle::before {
+  content: '';
+  position: absolute;
+  inset: -12px;
+}
 .react-flow__controls button {
   @apply bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700;
 }

@@ -2,7 +2,15 @@
 // AI Agent Orchestration Studio — Domain Types
 // ============================================================================
 
-export type Environment = 'development' | 'qa' | 'uat' | 'production';
+export type Environment = string;
+
+export type EnvColor = 'sky' | 'violet' | 'amber' | 'emerald' | 'rose' | 'teal' | 'slate' | 'indigo';
+
+export interface EnvDefinition {
+  id: string;
+  name: string;
+  color: EnvColor;
+}
 
 export type AgentStatus = 'draft' | 'ready' | 'published' | 'archived';
 
@@ -123,6 +131,8 @@ export interface KnowledgeConnection {
   icon: string;
   status: 'connected' | 'disconnected';
   collections: number;
+  type?: KnowledgeSource['type'];
+  collection?: string;
 }
 
 export interface MemoryConfiguration {
@@ -203,6 +213,8 @@ export interface Agent {
   updatedAt: string;
   /** False until the first Save. Unsaved drafts stay in memory only. */
   persisted?: boolean;
+  /** Set when this agent was copied into another environment by Deploy. */
+  sourceAgentId?: string;
 }
 
 export type NodeKind = 'agent' | 'control' | 'data' | 'integration';
@@ -297,6 +309,23 @@ export interface WorkflowEdge {
   animated?: boolean;
 }
 
+export interface InputFieldSchema {
+  key: string;
+  label?: string;
+  type: 'string' | 'number' | 'boolean' | 'json';
+  required?: boolean;
+}
+
+export interface WorkflowVersion {
+  version: string;
+  savedAt: string;
+  savedBy: string;
+  nodeCount: number;
+  labels: string[];
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
 export type TriggerType =
   | 'manual'
   | 'scheduled'
@@ -319,6 +348,8 @@ export interface Workflow {
   environment: Environment;
   triggerType: TriggerType;
   defaultInput?: string;
+  inputSchema?: InputFieldSchema[];
+  versions?: WorkflowVersion[];
   maxExecutionTimeSec: number;
   concurrencyLimit: number;
   loggingLevel: 'info' | 'debug' | 'warning' | 'error';
@@ -333,6 +364,8 @@ export interface Workflow {
   webhookSecret?: string;
   scheduleCron?: string;
   lastScheduledAt?: string;
+  /** Set when this workflow was deployed from another environment. */
+  sourceWorkflowId?: string;
 }
 
 export type RunStatus =
@@ -463,8 +496,23 @@ export interface Evaluation {
   status: 'draft' | 'running' | 'completed';
   cases: EvaluationCase[];
   createdAt: string;
+  lastRunAt?: string;
   averageAccuracy?: number;
   approvedForProduction?: boolean;
+}
+
+export interface LlmModel {
+  id: string;
+  name: string;
+  provider: ModelProvider;
+  model: string;
+  baseUrl: string;
+  apiKey?: string;
+  apiKeyMasked?: string;
+  source: 'studio' | 'custom';
+  active: boolean;
+  lastTestedAt?: string;
+  lastTestOk?: boolean;
 }
 
 export interface AuditLog {
@@ -488,6 +536,7 @@ export interface User {
   email: string;
   role: Role;
   avatar?: string;
+  allowedEnvironments?: string[];
 }
 
 // ============================================================================
@@ -612,4 +661,5 @@ export const PROMPT_VARIABLES = [
   '{{user_input}}', '{{workflow_input}}', '{{previous_agent_output}}',
   '{{knowledge_context}}', '{{current_date}}', '{{environment}}',
   '{{inputs.name}}', '{{nodes.nodeId.output}}',
+  '{{loop_item}}', '{{loop_index}}',
 ];

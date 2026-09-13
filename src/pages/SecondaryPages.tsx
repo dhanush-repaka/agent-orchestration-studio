@@ -8,11 +8,20 @@ import {
   ClipboardCheck, Activity, ScrollText, Settings, CheckCircle2, XCircle,
   RotateCw, Trash2, Edit3, Download, Play, GitCompare, ArrowRight,
   AlertCircle, ShieldCheck, Users, Database, Zap, Clock, Coins, TrendingUp,
-  Save, X,
+  Save, X, ChevronDown, ChevronUp, ChevronRight, RefreshCw, Globe,
 } from 'lucide-react';
-import type { Credential, Integration, Prompt, Evaluation, AuditLog } from '@/types';
+import type { Credential, EnvColor, Evaluation, AuditLog, Integration, LlmModel, ModelProvider, Prompt } from '@/types';
+import {
+  ENV_COLORS, allowedEnvironmentIds, envClass, envLabel, inCurrentEnvironment, isAdministrator,
+  movePromotionStep, promotionPathLabel,
+} from '@/lib/environments';
+import { ROLE_GUIDE, canRole } from '@/lib/roles';
+import { MODEL_PROVIDERS } from '@/types';
+import { defaultBaseUrl, providerLabel } from '@/lib/models';
+import { uniquePrefixedId } from '@/lib/ids';
 import { downloadText } from '@/lib/download';
 import { computeMonitoringStats, formatCost, formatDuration, formatPct, formatTokens } from '@/lib/monitoring';
+import { connectionKnowledgeType, isLiveKnowledge, knowledgeHelp } from '@/lib/knowledge';
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   const id = useId();
@@ -55,6 +64,7 @@ const DEFAULT_TOOL_CONFIG: ToolConfig = {
 };
 
 export function ToolsPage() {
+  const canWrite = canRole(useStore((s) => s.currentUser.role), 'resources.write');
   const integrations = useStore((s) => s.integrations);
   const addIntegration = useStore((s) => s.addIntegration);
   const testIntegration = useStore((s) => s.testIntegration);
@@ -105,6 +115,10 @@ export function ToolsPage() {
 
   const handleSave = async () => {
     if (!editingTool) return;
+    if (!canWrite) {
+      addToast('Your role cannot change integrations', 'error');
+      return;
+    }
     setSaving(true);
     const { error } = await supabase
       .from('tool_configs')
@@ -148,10 +162,12 @@ export function ToolsPage() {
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Tools & Integrations</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">{integrations.length} integrations · Manage connections</p>
         </div>
-        <button onClick={() => {
-          const created = addIntegration();
-          void openEdit(created);
-        }} className="btn-primary"><Plus className="w-4 h-4" /> Add Connection</button>
+        {canWrite && (
+          <button onClick={() => {
+            const created = addIntegration();
+            if (created) void openEdit(created);
+          }} className="btn-primary"><Plus className="w-4 h-4" /> Add Connection</button>
+        )}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {integrations.map((int) => <IntegrationCard key={int.id} int={int} onEdit={() => openEdit(int)} />)}
@@ -285,6 +301,7 @@ function IntegrationCard({ int, onEdit }: { int: Integration; onEdit: () => void
 // Prompt Library
 // ============================================================================
 export function PromptsPage() {
+  const canWrite = canRole(useStore((s) => s.currentUser.role), 'resources.write');
   const prompts = useStore((s) => s.prompts);
   const addPrompt = useStore((s) => s.addPrompt);
   const [search, setSearch] = useState('');
@@ -297,7 +314,7 @@ export function PromptsPage() {
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Prompt Library</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">{prompts.length} prompts · Reusable prompt templates</p>
         </div>
-        <button onClick={() => addPrompt()} className="btn-primary"><Plus className="w-4 h-4" /> Create Prompt</button>
+        {canWrite && <button onClick={() => addPrompt()} className="btn-primary"><Plus className="w-4 h-4" /> Create Prompt</button>}
       </div>
       <div className="relative">
         <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -346,36 +363,55 @@ function PromptCard({ prompt }: { prompt: Prompt }) {
 // Knowledge Sources
 // ============================================================================
 export function KnowledgePage() {
+  const canWrite = canRole(useStore((s) => s.currentUser.role), 'resources.write');
   const sources = useStore((s) => s.knowledgeConnections);
   const addKnowledgeConnection = useStore((s) => s.addKnowledgeConnection);
+  const updateKnowledgeConnection = useStore((s) => s.updateKnowledgeConnection);
   const toggleKnowledgeConnection = useStore((s) => s.toggleKnowledgeConnection);
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Knowledge Sources</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">Manage RAG knowledge connections</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Only Azure DevOps and API URLs are fetched at runtime. Other sources stay as labels.</p>
         </div>
-        <button onClick={() => addKnowledgeConnection()} className="btn-primary"><Plus className="w-4 h-4" /> Add Source</button>
+        {canWrite && <button onClick={() => addKnowledgeConnection()} className="btn-primary"><Plus className="w-4 h-4" /> Add Source</button>}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {sources.map((s) => (
-          <div key={s.id} className="card p-5 card-hover">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
-                <Icon name={s.icon} className="w-5 h-5 text-slate-700 dark:text-slate-300" />
+        {sources.map((s) => {
+          const type = connectionKnowledgeType(s);
+          const live = isLiveKnowledge(type);
+          return (
+            <div key={s.id} className="card p-5 card-hover">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                  <Icon name={s.icon} className="w-5 h-5 text-slate-700 dark:text-slate-300" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{s.name}</h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{s.collections} collections</p>
+                </div>
+                <span className={`w-2 h-2 rounded-full ${s.status === 'connected' ? 'bg-emerald-500' : 'bg-slate-400'}`} />
               </div>
-              <div className="flex-1">
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{s.name}</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400">{s.collections} collections</p>
-              </div>
-              <span className={`w-2 h-2 rounded-full ${s.status === 'connected' ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+              <p className={`text-[11px] mb-2 ${live ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-500 dark:text-slate-400'}`}>
+                {live ? 'Fetched at runtime' : 'Listed only'} · {knowledgeHelp(type)}
+              </p>
+              {type === 'api' && (
+                <input
+                  className="input text-xs mb-2"
+                  placeholder="https://example.com/collection.json"
+                  value={s.collection ?? ''}
+                  aria-label={`${s.name} collection URL`}
+                  disabled={!canWrite}
+                  onChange={(e) => updateKnowledgeConnection(s.id, { collection: e.target.value, type: 'api' })}
+                />
+              )}
+              <button onClick={() => toggleKnowledgeConnection(s.id)} className="btn-secondary text-xs w-full justify-center">
+                {s.status === 'connected' ? 'Disconnect' : 'Connect'}
+              </button>
             </div>
-            <button onClick={() => toggleKnowledgeConnection(s.id)} className="btn-secondary text-xs w-full justify-center">
-              {s.status === 'connected' ? 'Disconnect' : 'Connect'}
-            </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -384,87 +420,230 @@ export function KnowledgePage() {
 // ============================================================================
 // Models
 // ============================================================================
-interface ModelConfig {
+interface LlmForm {
+  name: string;
+  provider: ModelProvider;
   model: string;
-  provider: string;
   baseUrl: string;
-  configured: boolean;
-  status: string;
+  apiKey: string;
+  active: boolean;
 }
 
+const EMPTY_LLM_FORM: LlmForm = {
+  name: '',
+  provider: 'OpenAI',
+  model: 'gpt-4o-mini',
+  baseUrl: 'https://api.openai.com/v1',
+  apiKey: '',
+  active: false,
+};
+
 export function ModelsPage() {
+  const canWrite = canRole(useStore((s) => s.currentUser.role), 'resources.write');
   const agents = useStore((s) => s.agents);
-  const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const llmModels = useStore((s) => s.llmModels);
+  const hydrateStudioModel = useStore((s) => s.hydrateStudioModel);
+  const upsertLlmModel = useStore((s) => s.upsertLlmModel);
+  const deleteLlmModel = useStore((s) => s.deleteLlmModel);
+  const activateLlmModel = useStore((s) => s.activateLlmModel);
+  const testLlmModel = useStore((s) => s.testLlmModel);
+  const [loading, setLoading] = useState(llmModels.length === 0);
+  const [editing, setEditing] = useState<LlmModel | 'new' | null>(null);
+  const [form, setForm] = useState<LlmForm>(EMPTY_LLM_FORM);
+  const [testingId, setTestingId] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchModel = async () => {
-      try {
-        const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/model-config`;
-        const res = await fetch(fnUrl, {
-          headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
-        setModelConfig(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load model configuration');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchModel();
-  }, []);
+    let cancelled = false;
+    if (!llmModels.length) setLoading(true);
+    void hydrateStudioModel().then(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [hydrateStudioModel]);
 
-  const agentsUsingModel = agents.filter(
-    (a) => modelConfig && a.modelName === modelConfig.model,
-  ).length;
+  const openCreate = () => {
+    setForm({ ...EMPTY_LLM_FORM, active: llmModels.length === 0 });
+    setEditing('new');
+  };
+
+  const openEdit = (model: LlmModel) => {
+    setForm({
+      name: model.name,
+      provider: model.provider,
+      model: model.model,
+      baseUrl: model.baseUrl,
+      apiKey: '',
+      active: model.active,
+    });
+    setEditing(model);
+  };
+
+  const handleSave = () => {
+    if (!form.model.trim()) return;
+    const existing = editing !== 'new' && editing ? editing : null;
+    const next: LlmModel = {
+      id: existing?.id ?? uniquePrefixedId('m', llmModels.map((m) => m.id)),
+      name: form.name.trim() || form.model.trim(),
+      provider: form.provider,
+      model: form.model.trim(),
+      baseUrl: form.baseUrl.trim() || defaultBaseUrl(form.provider),
+      apiKey: form.apiKey.trim() || existing?.apiKey,
+      apiKeyMasked: existing?.apiKeyMasked,
+      source: existing?.source ?? 'custom',
+      active: form.active || llmModels.length === 0,
+      lastTestedAt: existing?.lastTestedAt,
+      lastTestOk: existing?.lastTestOk,
+    };
+    upsertLlmModel(next);
+    setEditing(null);
+  };
+
+  const handleTest = async (id: string, apiKey?: string) => {
+    setTestingId(id);
+    await testLlmModel(id, apiKey);
+    setTestingId(null);
+  };
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 animate-fade-in">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Models</h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">Available AI model configuration</p>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Models</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            {llmModels.length} model{llmModels.length !== 1 ? 's' : ''} · Add the LLMs this studio can use, then test the connection
+          </p>
+        </div>
+        {canWrite && <button onClick={openCreate} className="btn-primary"><Plus className="w-4 h-4" /> Add Model</button>}
       </div>
 
       {loading && (
         <div className="card p-12 flex items-center justify-center text-slate-400">
-          <Clock className="w-5 h-5 animate-spin mr-2" /> Loading model configuration...
+          <Clock className="w-5 h-5 animate-spin mr-2" /> Loading models...
         </div>
       )}
 
-      {error && !loading && (
-        <div className="card p-6 border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/50">
-          <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
-            <AlertCircle className="w-5 h-5" />
-            <p className="text-sm font-medium">{error}</p>
-          </div>
+      {!loading && llmModels.length === 0 && (
+        <div className="card p-12 text-center">
+          <Cpu className="w-12 h-12 text-slate-300 dark:text-slate-600 mx-auto mb-3" />
+          <p className="text-slate-500 dark:text-slate-400 mb-4">No models yet. Add the studio ChatGPT connection to get started.</p>
+          {canWrite && <button onClick={openCreate} className="btn-primary"><Plus className="w-4 h-4" /> Add Model</button>}
         </div>
       )}
 
-      {modelConfig && !loading && !error && (
+      {!loading && llmModels.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <div className="card p-5 card-hover">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-lg bg-brand-50 dark:bg-brand-950 flex items-center justify-center">
-                <Cpu className="w-5 h-5 text-brand-600 dark:text-brand-400" />
+          {llmModels.map((model) => {
+            const usedBy = agents.filter((a) => a.modelName === model.model).length;
+            return (
+              <div key={model.id} className="card p-5 flex flex-col">
+                <div className="flex items-start gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-lg bg-brand-50 dark:bg-brand-950 flex items-center justify-center shrink-0">
+                    <Cpu className="w-5 h-5 text-brand-600 dark:text-brand-400" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-white truncate">{model.name}</h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{providerLabel(model.provider)} · {model.model}</p>
+                  </div>
+                  {model.active
+                    ? <span className="badge bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">Default</span>
+                    : <StatusBadge status="draft" />}
+                </div>
+                <p className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate mb-2">{model.baseUrl}</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+                  {usedBy} agent{usedBy !== 1 ? 's' : ''} · {model.apiKeyMasked || (model.source === 'studio' ? 'uses studio secret' : 'no key saved')}
+                  {model.lastTestedAt ? ` · last test ${model.lastTestOk ? 'ok' : 'failed'} ${model.lastTestedAt.replace('T', ' ').slice(0, 16)}` : ''}
+                </p>
+                <div className="mt-auto flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    onClick={() => { void handleTest(model.id); }}
+                    disabled={testingId === model.id}
+                    className="btn-secondary text-xs"
+                  >
+                    {testingId === model.id ? <Clock className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                    Test connection
+                  </button>
+                  <button type="button" onClick={() => openEdit(model)} className="btn-ghost text-xs p-2" aria-label={`Edit ${model.name}`}>
+                    <Edit3 className="w-4 h-4" />
+                  </button>
+                  {!model.active && (
+                    <button type="button" onClick={() => activateLlmModel(model.id)} className="btn-ghost text-xs">Set default</button>
+                  )}
+                  {model.source !== 'studio' && (
+                    <button type="button" onClick={() => deleteLlmModel(model.id)} className="btn-ghost text-xs p-2 text-red-500" aria-label={`Delete ${model.name}`}>
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="flex-1">
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{modelConfig.provider} / {modelConfig.model}</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400">{agentsUsingModel} agent{agentsUsingModel !== 1 ? 's' : ''} using this model</p>
+            );
+          })}
+        </div>
+      )}
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 animate-fade-in" onClick={() => setEditing(null)}>
+          <div className="card max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-5 border-b border-slate-200 dark:border-slate-800 sticky top-0 bg-white dark:bg-slate-900 z-10">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900 dark:text-white">{editing === 'new' ? 'Add model' : 'Edit model'}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Saved models appear on the agent AI Model tab.</p>
               </div>
+              <button onClick={() => setEditing(null)} className="btn-ghost p-2" aria-label="Close model editor"><X className="w-5 h-5" /></button>
             </div>
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                {modelConfig.configured ? (
-                  <><Zap className="w-3.5 h-3.5 text-emerald-500" /> <span className="text-emerald-600 dark:text-emerald-400 font-medium">Active</span></>
-                ) : (
-                  <><AlertCircle className="w-3.5 h-3.5 text-amber-500" /> <span className="text-amber-600 dark:text-amber-400 font-medium">API key not configured</span></>
-                )}
+            <div className="p-5 space-y-4">
+              <Field label="Display name">
+                <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Studio ChatGPT" />
+              </Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Provider">
+                  <select
+                    className="input"
+                    value={form.provider}
+                    onChange={(e) => {
+                      const provider = e.target.value as ModelProvider;
+                      setForm({ ...form, provider, baseUrl: defaultBaseUrl(provider) });
+                    }}
+                  >
+                    {MODEL_PROVIDERS.filter((p, i, all) => all.indexOf(p) === i).map((p) => (
+                      <option key={p} value={p}>{providerLabel(p)}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Model id">
+                  <input className="input font-mono text-sm" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} placeholder="gpt-4o-mini" />
+                </Field>
               </div>
-              <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                <span className="font-mono truncate">{modelConfig.baseUrl}</span>
+              <Field label="API endpoint">
+                <input className="input font-mono text-sm" value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} />
+              </Field>
+              <Field label="API key">
+                <input
+                  type="password"
+                  className="input font-mono text-sm"
+                  value={form.apiKey}
+                  onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
+                  placeholder={editing !== 'new' && editing.apiKeyMasked ? 'Leave blank to keep the saved key' : 'Optional. Blank uses the studio secret'}
+                />
+              </Field>
+              <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
+                Use as the default for new agents
+              </label>
+            </div>
+            <div className="flex items-center gap-2 p-5 border-t border-slate-200 dark:border-slate-800 sticky bottom-0 bg-white dark:bg-slate-900">
+              {editing !== 'new' && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={testingId === editing.id}
+                  onClick={() => { void handleTest(editing.id, form.apiKey); }}
+                >
+                  {testingId === editing.id ? <Clock className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                  Test connection
+                </button>
+              )}
+              <div className="ml-auto flex gap-2">
+                <button onClick={() => setEditing(null)} className="btn-secondary">Cancel</button>
+                <button onClick={handleSave} className="btn-primary"><Save className="w-4 h-4" /> Save</button>
               </div>
             </div>
           </div>
@@ -480,8 +659,8 @@ export function ModelsPage() {
 interface CredentialConfig {
   name: string;
   type: 'api-key' | 'oauth' | 'basic' | 'bearer' | 'connection-string';
+  environment: string;
   value: string;
-  environment: 'development' | 'qa' | 'uat' | 'production';
 }
 
 const DEFAULT_CRED_CONFIG: CredentialConfig = {
@@ -498,7 +677,11 @@ function maskValue(value: string): string {
 }
 
 export function CredentialsPage() {
-  const credentials = useStore((s) => s.credentials);
+  const canWrite = canRole(useStore((s) => s.currentUser.role), 'resources.write');
+  const environment = useStore((s) => s.environment);
+  const envDefs = useStore((s) => s.environments);
+  const allCredentials = useStore((s) => s.credentials);
+  const credentials = allCredentials.filter((c) => inCurrentEnvironment(c.environment, environment));
   const updateCredential = useStore((s) => s.updateCredential);
   const addCredential = useStore((s) => s.addCredential);
   const rotateCredential = useStore((s) => s.rotateCredential);
@@ -538,6 +721,10 @@ export function CredentialsPage() {
 
   const handleSave = async () => {
     if (!editingCred) return;
+    if (!canWrite) {
+      addToast('Your role cannot change credentials', 'error');
+      return;
+    }
     setSaving(true);
     const upsertPayload: Record<string, string> = {
       id: editingCred.id,
@@ -573,12 +760,14 @@ export function CredentialsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Credentials</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">{credentials.length} credentials · Securely stored and masked</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">{credentials.length} credentials in {envLabel(environment, envDefs)} · Securely stored and masked</p>
         </div>
-        <button onClick={() => {
-          const created = addCredential();
-          void openEdit(created);
-        }} className="btn-primary"><Plus className="w-4 h-4" /> Add Credential</button>
+        {canWrite && (
+          <button onClick={() => {
+            const created = addCredential();
+            if (created) void openEdit(created);
+          }} className="btn-primary"><Plus className="w-4 h-4" /> Add Credential</button>
+        )}
       </div>
       <div className="card overflow-hidden">
         <table className="w-full text-sm">
@@ -599,7 +788,7 @@ export function CredentialsPage() {
                 <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{c.name}</td>
                 <td className="px-4 py-3"><span className="badge bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">{c.type}</span></td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{c.maskedValue}</td>
-                <td className="px-4 py-3"><span className="badge bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 capitalize">{c.environment}</span></td>
+                <td className="px-4 py-3"><span className="badge bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">{envLabel(c.environment, envDefs)}</span></td>
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{c.workflowsUsing}</td>
                 <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">{c.lastRotatedAt?.slice(0, 10) ?? '—'}</td>
                 <td className="px-4 py-3">
@@ -653,11 +842,10 @@ export function CredentialsPage() {
                   </select>
                 </Field>
                 <Field label="Environment">
-                  <select className="input" value={config.environment} onChange={(e) => setConfig({ ...config, environment: e.target.value as CredentialConfig['environment'] })}>
-                    <option value="development">Development</option>
-                    <option value="qa">QA</option>
-                    <option value="uat">UAT</option>
-                    <option value="production">Production</option>
+                  <select className="input" value={config.environment} onChange={(e) => setConfig({ ...config, environment: e.target.value })}>
+                    {envDefs.map((env) => (
+                      <option key={env.id} value={env.id}>{env.name}</option>
+                    ))}
                   </select>
                 </Field>
               </div>
@@ -688,59 +876,186 @@ export function CredentialsPage() {
 // Evaluations
 // ============================================================================
 export function EvaluationsPage() {
+  const canWrite = canRole(useStore((s) => s.currentUser.role), 'evaluations.write');
+  const environment = useStore((s) => s.environment);
   const evaluations = useStore((s) => s.evaluations);
-  const addEvaluation = useStore((s) => s.addEvaluation);
+  const agents = useStore((s) => s.agents);
+  const createEvaluation = useStore((s) => s.createEvaluation);
+  const persistedAgents = agents.filter((a) => a.persisted !== false && inCurrentEnvironment(a.environment, environment));
+  const visibleEvaluations = evaluations.filter((ev) => {
+    const agent = agents.find((a) => a.id === ev.agentId);
+    return !agent || inCurrentEnvironment(agent.environment, environment);
+  });
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newAgentId, setNewAgentId] = useState(persistedAgents[0]?.id ?? '');
+
+  const handleCreate = () => {
+    const created = createEvaluation(newAgentId, newName);
+    if (created) {
+      setShowCreate(false);
+      setNewName('');
+    }
+  };
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 animate-fade-in">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Evaluations</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">{evaluations.length} evaluations · Test agent quality</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            Quality tests for one agent. You give an input and the expected output. Run sends that input through the agent and scores how close the real answer is.
+          </p>
         </div>
-        <button onClick={() => addEvaluation()} className="btn-primary"><Plus className="w-4 h-4" /> New Evaluation</button>
+        {canWrite && (
+          <button onClick={() => { setNewAgentId(persistedAgents[0]?.id ?? ''); setShowCreate(true); }} className="btn-primary">
+            <Plus className="w-4 h-4" /> New Evaluation
+          </button>
+        )}
       </div>
-      <div className="space-y-4">
-        {evaluations.map((ev) => <EvaluationCard key={ev.id} ev={ev} />)}
+
+      <div className="card p-4 bg-slate-50 dark:bg-slate-800/40">
+        <p className="text-xs text-slate-600 dark:text-slate-300">
+          1. Pick an agent. 2. Add cases (input + expected output). 3. Run. The score is exact match or token overlap against your expected text, not a made-up number.
+        </p>
       </div>
+
+      {visibleEvaluations.length === 0 ? (
+        <div className="card p-12 text-center">
+          <ClipboardCheck className="w-12 h-12 text-slate-300 dark:text-slate-600 mx-auto mb-3" />
+          <p className="text-slate-500 dark:text-slate-400 mb-4">No evaluations yet. Create one against a published agent.</p>
+          {canWrite && <button onClick={() => setShowCreate(true)} className="btn-primary"><Plus className="w-4 h-4" /> New Evaluation</button>}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {visibleEvaluations.map((ev) => <EvaluationCard key={ev.id} ev={ev} />)}
+        </div>
+      )}
+
+      {showCreate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 animate-fade-in" onClick={() => setShowCreate(false)}>
+          <div className="card p-6 max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-semibold text-slate-900 dark:text-white mb-1">New evaluation</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">This suite will call the selected agent for each case.</p>
+            <div className="space-y-3">
+              <Field label="Name">
+                <input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Login agent quality" />
+              </Field>
+              <Field label="Agent">
+                <select className="input" value={newAgentId} onChange={(e) => setNewAgentId(e.target.value)}>
+                  {persistedAgents.length === 0 && <option value="">No agents saved</option>}
+                  {persistedAgents.map((a) => (
+                    <option key={a.id} value={a.id}>{a.displayName}{a.status === 'published' ? '' : ' (draft)'}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setShowCreate(false)} className="btn-secondary">Cancel</button>
+              <button onClick={handleCreate} disabled={!newAgentId} className="btn-primary">Create</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function EvaluationCard({ ev }: { ev: Evaluation }) {
+  const canWrite = canRole(useStore((s) => s.currentUser.role), 'evaluations.write');
+  const agents = useStore((s) => s.agents);
   const addToast = useStore((s) => s.addToast);
   const runEvaluation = useStore((s) => s.runEvaluation);
   const approveEvaluation = useStore((s) => s.approveEvaluation);
+  const updateEvaluation = useStore((s) => s.updateEvaluation);
+  const deleteEvaluation = useStore((s) => s.deleteEvaluation);
+  const updateEvaluationCase = useStore((s) => s.updateEvaluationCase);
+  const deleteEvaluationCase = useStore((s) => s.deleteEvaluationCase);
+  const [open, setOpen] = useState(ev.status === 'draft' || ev.status === 'running');
+
+  const persistedAgents = agents.filter((a) => a.persisted !== false);
+  const addCase = () => {
+    const id = `${ev.id}-c${Date.now()}`;
+    updateEvaluation(ev.id, { cases: [...ev.cases, { id, input: '', expectedOutput: '' }] });
+    setOpen(true);
+  };
+
   return (
     <div className="card p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-violet-50 dark:bg-violet-950 flex items-center justify-center">
+      <div className="flex items-center justify-between mb-4 gap-3">
+        <button type="button" onClick={() => setOpen((v) => !v)} className="flex items-center gap-3 text-left min-w-0 flex-1">
+          {open ? <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />}
+          <div className="w-10 h-10 rounded-lg bg-violet-50 dark:bg-violet-950 flex items-center justify-center shrink-0">
             <ClipboardCheck className="w-5 h-5 text-violet-600 dark:text-violet-400" />
           </div>
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{ev.name}</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{ev.agentName} · {ev.cases.length} test cases</p>
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white truncate">{ev.name}</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {ev.agentName} · {ev.cases.length} case{ev.cases.length !== 1 ? 's' : ''}
+              {ev.lastRunAt ? ` · last run ${ev.lastRunAt.replace('T', ' ').slice(0, 16)}` : ''}
+            </p>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
+        </button>
+        <div className="flex items-center gap-2 shrink-0">
           {ev.approvedForProduction && <span className="badge bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"><CheckCircle2 className="w-3 h-3" /> Approved</span>}
           <StatusBadge status={ev.status === 'completed' ? 'completed' : ev.status === 'running' ? 'running' : 'draft'} />
         </div>
       </div>
-      {ev.averageAccuracy != null && (
-        <div className="grid grid-cols-4 gap-3 mb-4">
-          <Metric label="Avg Accuracy" value={`${(ev.averageAccuracy * 100).toFixed(0)}%`} color="text-emerald-600" />
-          <Metric label="Avg Relevance" value={`${((ev.cases.reduce((a, c) => a + (c.relevance ?? 0), 0) / ev.cases.length) * 100).toFixed(0)}%`} color="text-brand-600" />
-          <Metric label="Hallucination" value={`${((ev.cases.reduce((a, c) => a + (c.hallucinationScore ?? 0), 0) / ev.cases.length) * 100).toFixed(0)}%`} color="text-red-600" />
-          <Metric label="Avg Tokens" value={Math.round(ev.cases.reduce((a, c) => a + (c.tokenUsage ?? 0), 0) / ev.cases.length).toString()} color="text-indigo-600" />
+      {ev.averageAccuracy != null && ev.status !== 'draft' && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <Metric label="Match vs expected" value={`${(ev.averageAccuracy * 100).toFixed(0)}%`} color="text-emerald-600" />
+          <Metric label="Cases" value={String(ev.cases.length)} color="text-brand-600" />
+          <Metric label="Weak cases" value={String(ev.cases.filter((c) => (c.accuracy ?? 0) < 0.5).length)} color="text-red-600" />
+          <Metric label="Avg tokens" value={String(Math.round(ev.cases.reduce((a, c) => a + (c.tokenUsage ?? 0), 0) / Math.max(ev.cases.length, 1)))} color="text-indigo-600" />
         </div>
       )}
-      <div className="flex gap-2">
-        <button onClick={() => runEvaluation(ev.id)} disabled={ev.status === 'running'} className="btn-secondary text-sm"><Play className="w-3.5 h-3.5" /> Run</button>
+      {open && (
+        <div className="space-y-3 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Suite name">
+              <input className="input" value={ev.name} onChange={(e) => updateEvaluation(ev.id, { name: e.target.value })} />
+            </Field>
+            <Field label="Agent under test">
+              <select className="input" value={ev.agentId} onChange={(e) => updateEvaluation(ev.id, { agentId: e.target.value })}>
+                {persistedAgents.map((a) => (
+                  <option key={a.id} value={a.id}>{a.displayName}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          {ev.cases.map((c, i) => (
+            <div key={c.id} className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Case {i + 1}{c.accuracy != null ? ` · ${(c.accuracy * 100).toFixed(0)}% match` : ''}</p>
+                <button type="button" onClick={() => deleteEvaluationCase(ev.id, c.id)} className="btn-ghost p-1 text-red-500" aria-label={`Delete case ${i + 1}`}>
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <Field label="Input sent to the agent">
+                <textarea className="input font-mono text-xs min-h-[72px]" value={c.input} onChange={(e) => updateEvaluationCase(ev.id, c.id, { input: e.target.value })} placeholder='{"workItemId":21}' />
+              </Field>
+              <Field label="Expected output">
+                <textarea className="input font-mono text-xs min-h-[72px]" value={c.expectedOutput} onChange={(e) => updateEvaluationCase(ev.id, c.id, { expectedOutput: e.target.value })} placeholder="What a correct answer should look like" />
+              </Field>
+              {c.actualOutput != null && (
+                <Field label="Actual output from last run">
+                  <pre className="input font-mono text-xs whitespace-pre-wrap min-h-[72px] overflow-auto">{c.actualOutput}</pre>
+                </Field>
+              )}
+            </div>
+          ))}
+          {canWrite && <button type="button" onClick={addCase} className="btn-secondary text-sm"><Plus className="w-3.5 h-3.5" /> Add case</button>}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {canWrite && (
+          <button onClick={() => { void runEvaluation(ev.id); setOpen(true); }} disabled={ev.status === 'running'} className="btn-secondary text-sm">
+            <Play className="w-3.5 h-3.5" /> {ev.status === 'running' ? 'Running…' : 'Run against agent'}
+          </button>
+        )}
         <button onClick={() => addToast(
           ev.averageAccuracy != null
-            ? `${ev.name}: ${(ev.averageAccuracy * 100).toFixed(0)}% accuracy vs 80% baseline`
+            ? `${ev.name}: ${(ev.averageAccuracy * 100).toFixed(0)}% match vs expected (80% is a useful bar)`
             : 'Run the evaluation before comparing',
           ev.averageAccuracy != null ? 'info' : 'error',
         )} className="btn-secondary text-sm"><GitCompare className="w-3.5 h-3.5" /> Compare</button>
@@ -748,7 +1063,8 @@ function EvaluationCard({ ev }: { ev: Evaluation }) {
           downloadText(`${ev.name.replace(/\s+/g, '-').toLowerCase()}-results.json`, JSON.stringify(ev, null, 2));
           addToast(`Exported ${ev.name}`, 'success');
         }} className="btn-secondary text-sm"><Download className="w-3.5 h-3.5" /> Export</button>
-        {!ev.approvedForProduction && ev.status === 'completed' && (
+        {canWrite && <button onClick={() => deleteEvaluation(ev.id)} className="btn-ghost text-sm text-red-500"><Trash2 className="w-3.5 h-3.5" /> Delete</button>}
+        {canWrite && !ev.approvedForProduction && ev.status === 'completed' && (
           <button onClick={() => approveEvaluation(ev.id)} className="btn-primary text-sm ml-auto"><CheckCircle2 className="w-3.5 h-3.5" /> Approve for Production</button>
         )}
       </div>
@@ -769,7 +1085,9 @@ function Metric({ label, value, color }: { label: string; value: string; color: 
 // Monitoring
 // ============================================================================
 export function MonitoringPage() {
-  const runs = useStore((s) => s.runs);
+  const environment = useStore((s) => s.environment);
+  const envDefs = useStore((s) => s.environments);
+  const runs = useStore((s) => s.runs).filter((r) => inCurrentEnvironment(r.environment, environment));
   const stats = computeMonitoringStats(runs);
   const workflowMax = Math.max(...stats.costByWorkflow.map((c) => c.cost), 0.01);
   const agentMax = Math.max(...stats.costByAgent.map((c) => c.cost), 0.01);
@@ -791,7 +1109,7 @@ export function MonitoringPage() {
     <div className="p-6 max-w-7xl mx-auto space-y-5 animate-fade-in">
       <div>
         <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Monitoring & Analytics</h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">Real-time performance and cost metrics</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">Performance and cost metrics for {envLabel(environment, envDefs)}</p>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {metrics.map((m) => (
@@ -846,15 +1164,29 @@ export function MonitoringPage() {
 // Audit Logs
 // ============================================================================
 export function AuditPage() {
-  const logs = useStore((s) => s.auditLogs);
+  const environment = useStore((s) => s.environment);
+  const logs = useStore((s) => s.auditLogs).filter((l) => inCurrentEnvironment(l.environment, environment));
+  const hydrateAuditLogs = useStore((s) => s.hydrateAuditLogs);
   const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    void hydrateAuditLogs();
+    const id = window.setInterval(() => { void hydrateAuditLogs(); }, 4000);
+    return () => window.clearInterval(id);
+  }, [hydrateAuditLogs]);
+
   const filtered = logs.filter((l) => l.action.toLowerCase().includes(search.toLowerCase()) || l.resource.toLowerCase().includes(search.toLowerCase()) || l.user.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 animate-fade-in">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Audit Logs</h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">{logs.length} records · Full governance trail</p>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Audit Logs</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">{logs.length} records in this environment · Writes when you change agents, workflows, users, runs, or evaluations</p>
+        </div>
+        <button type="button" onClick={() => { void hydrateAuditLogs(); }} className="btn-secondary text-sm">
+          <RefreshCw className="w-3.5 h-3.5" /> Refresh
+        </button>
       </div>
       <div className="relative">
         <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -876,6 +1208,13 @@ export function AuditPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
+                    No live audit events yet. Publish an agent, delete a workflow, or change a user role and this table updates.
+                  </td>
+                </tr>
+              )}
               {filtered.map((l: AuditLog) => (
                 <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                   <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 font-mono">{l.timestamp.replace('T', ' ').slice(0, 19)}</td>
@@ -905,76 +1244,244 @@ export function AuditPage() {
 // ============================================================================
 export function SettingsPage() {
   const users = useStore((s) => s.users);
+  const currentUser = useStore((s) => s.currentUser);
+  const hydrateUsers = useStore((s) => s.hydrateUsers);
+  const hydrateEnvironments = useStore((s) => s.hydrateEnvironments);
   const updateUser = useStore((s) => s.updateUser);
   const addToast = useStore((s) => s.addToast);
   const workspaceName = useStore((s) => s.workspaceName);
   const environment = useStore((s) => s.environment);
+  const environments = useStore((s) => s.environments);
+  const addEnvironment = useStore((s) => s.addEnvironment);
+  const updateEnvironmentDef = useStore((s) => s.updateEnvironmentDef);
+  const deleteEnvironment = useStore((s) => s.deleteEnvironment);
+  const promotionPath = useStore((s) => s.promotionPath);
+  const setPromotionPath = useStore((s) => s.setPromotionPath);
   const defaultLoggingLevel = useStore((s) => s.defaultLoggingLevel);
   const saveWorkspaceSettings = useStore((s) => s.saveWorkspaceSettings);
   const [editingUser, setEditingUser] = useState<typeof users[number] | null>(null);
   const [editName, setEditName] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editRole, setEditRole] = useState<typeof users[number]['role']>('Viewer');
+  const [editAllowed, setEditAllowed] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [wsName, setWsName] = useState(workspaceName);
   const [wsEnv, setWsEnv] = useState(environment);
   const [wsLog, setWsLog] = useState(defaultLoggingLevel);
+  const [newEnvName, setNewEnvName] = useState('');
+  const [newEnvColor, setNewEnvColor] = useState<EnvColor>('sky');
+  const [envNameDrafts, setEnvNameDrafts] = useState<Record<string, string>>({});
+  const roster = users.length ? users : (currentUser.id ? [currentUser] : []);
+  const isAdmin = isAdministrator(currentUser.role);
+  const myEnvs = allowedEnvironmentIds(currentUser, environments);
+
+  useEffect(() => {
+    void hydrateUsers();
+    void hydrateEnvironments();
+  }, [hydrateUsers, hydrateEnvironments]);
 
   const openEdit = useCallback(async (u: typeof users[number]) => {
     setEditingUser(u);
     setEditName(u.name);
     setEditEmail(u.email);
     setEditRole(u.role);
+    setEditAllowed(u.allowedEnvironments ?? useStore.getState().environments.map((env) => env.id));
     setLoading(true);
-
-    const { data, error } = await supabase
-      .from('user_roles')
-      .select('*')
-      .eq('id', u.id)
-      .maybeSingle();
-
+    await hydrateUsers();
+    const fresh = useStore.getState().users.find((row) => row.id === u.id) ?? u;
+    setEditName(fresh.name);
+    setEditEmail(fresh.email);
+    setEditRole(fresh.role);
+    setEditAllowed(fresh.allowedEnvironments ?? useStore.getState().environments.map((env) => env.id));
     setLoading(false);
-    if (error) {
-      console.error('Failed to load user', error);
-      addToast('Could not load that user', 'error');
-      return;
-    }
-    if (data) {
-      setEditName(data.name ?? u.name);
-      setEditEmail(data.email ?? u.email);
-      setEditRole(data.role ?? u.role);
-    }
-  }, [addToast]);
+  }, [hydrateUsers]);
 
   const handleSave = async () => {
     if (!editingUser) return;
-    setSaving(true);
-    const { error } = await supabase
-      .from('user_roles')
-      .upsert({
-        id: editingUser.id,
-        name: editName,
-        email: editEmail,
-        role: editRole,
-        updated_at: new Date().toISOString(),
-      });
-    setSaving(false);
-    if (error) {
-      console.error('Failed to save user', error);
-      addToast('Could not save that user', 'error');
+    if (editRole !== 'Administrator' && editAllowed.length === 0) {
+      addToast('Give this user at least one environment', 'error');
       return;
     }
-    updateUser(editingUser.id, { name: editName, email: editEmail, role: editRole });
-    addToast(`${editName}'s role updated to ${editRole}`, 'success');
+    setSaving(true);
+    updateUser(editingUser.id, {
+      name: editName,
+      email: editEmail,
+      role: editRole,
+      allowedEnvironments: editRole === 'Administrator' ? undefined : editAllowed,
+    });
+    setSaving(false);
+    addToast(`${editName}'s access updated`, 'success');
     setEditingUser(null);
+  };
+
+  const handleAddEnv = () => {
+    const created = addEnvironment(newEnvName, newEnvColor);
+    if (created) {
+      setNewEnvName('');
+      setNewEnvColor(ENV_COLORS[(environments.length + 1) % ENV_COLORS.length]);
+    }
+  };
+
+  const envSummary = (u: typeof users[number]) => {
+    if (isAdministrator(u.role) || !u.allowedEnvironments) return 'All';
+    if (!u.allowedEnvironments.length) return 'None';
+    return u.allowedEnvironments.map((id) => envLabel(id, environments)).join(', ');
   };
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-5 animate-fade-in">
       <div>
         <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Settings</h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">Workspace configuration and access control</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">People who have signed into this workspace. Roles persist in user_roles. The header environment switcher only shows environments each person can use.</p>
+      </div>
+
+      <div className="card p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Globe className="w-5 h-5 text-brand-600 dark:text-brand-400" />
+          <h3 className="section-title">Environments</h3>
+        </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+          The header selector is the working environment. Agents, workflows, credentials, and runs stay in that environment. New items inherit it.
+        </p>
+        {!isAdmin && (
+          <p className="text-sm text-slate-600 dark:text-slate-300 mb-3">
+            You can access: {myEnvs.map((id) => envLabel(id, environments)).join(', ') || 'none'}
+          </p>
+        )}
+        <div className="space-y-2">
+          {environments.map((env) => (
+            <div key={env.id} className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+              <span className={`badge capitalize ${envClass(env)}`}>{env.name}</span>
+              <span className="text-xs font-mono text-slate-400">{env.id}</span>
+              {isAdmin ? (
+                <>
+                  <input
+                    className="input flex-1 min-w-0"
+                    value={envNameDrafts[env.id] ?? env.name}
+                    aria-label={`Rename ${env.name}`}
+                    onChange={(e) => setEnvNameDrafts((prev) => ({ ...prev, [env.id]: e.target.value }))}
+                    onBlur={() => {
+                      const name = (envNameDrafts[env.id] ?? env.name).trim();
+                      if (name && name !== env.name) updateEnvironmentDef(env.id, { name });
+                      setEnvNameDrafts((prev) => {
+                        const next = { ...prev };
+                        delete next[env.id];
+                        return next;
+                      });
+                    }}
+                  />
+                  <select
+                    className="input w-32"
+                    value={env.color}
+                    aria-label={`Color for ${env.name}`}
+                    onChange={(e) => updateEnvironmentDef(env.id, { color: e.target.value as EnvColor })}
+                  >
+                    {ENV_COLORS.map((color) => (
+                      <option key={color} value={color}>{color}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="btn-ghost p-1.5 text-red-500" aria-label={`Delete ${env.name}`} onClick={() => deleteEnvironment(env.id)}>
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </>
+              ) : (
+                <span className="flex-1" />
+              )}
+            </div>
+          ))}
+        </div>
+        {isAdmin && (
+          <div className="flex flex-wrap items-end gap-2 mt-4">
+            <Field label="New environment">
+              <input className="input" placeholder="Staging" value={newEnvName} onChange={(e) => setNewEnvName(e.target.value)} />
+            </Field>
+            <Field label="Color">
+              <select className="input w-32" value={newEnvColor} onChange={(e) => setNewEnvColor(e.target.value as EnvColor)}>
+                {ENV_COLORS.map((color) => (
+                  <option key={color} value={color}>{color}</option>
+                ))}
+              </select>
+            </Field>
+            <button type="button" className="btn-primary" onClick={handleAddEnv}>
+              <Plus className="w-4 h-4" /> Add
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="card p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <ArrowRight className="w-5 h-5 text-brand-600 dark:text-brand-400" />
+          <h3 className="section-title">Path to production</h3>
+        </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+          Deploy can follow this path one step at a time. People can still pick a specific environment when they need to.
+        </p>
+        <p className="text-sm font-medium text-slate-800 dark:text-slate-100 mb-4">
+          {promotionPathLabel(promotionPath, environments) || 'No path set'}
+        </p>
+        <div className="space-y-2">
+          {promotionPath.map((id, index) => {
+            const env = environments.find((item) => item.id === id);
+            if (!env) return null;
+            return (
+              <div key={id} className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+                <span className="text-xs font-mono text-slate-400 w-5">{index + 1}</span>
+                <span className={`badge capitalize ${envClass(env)}`}>{env.name}</span>
+                <span className="flex-1" />
+                {isAdmin && (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-ghost p-1.5"
+                      aria-label={`Move ${env.name} earlier`}
+                      disabled={index === 0}
+                      onClick={() => setPromotionPath(movePromotionStep(promotionPath, id, -1))}
+                    >
+                      <ChevronUp className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost p-1.5"
+                      aria-label={`Move ${env.name} later`}
+                      disabled={index === promotionPath.length - 1}
+                      onClick={() => setPromotionPath(movePromotionStep(promotionPath, id, 1))}
+                    >
+                      <ChevronDown className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost p-1.5 text-red-500"
+                      aria-label={`Remove ${env.name} from the path`}
+                      disabled={promotionPath.length <= 2}
+                      onClick={() => setPromotionPath(promotionPath.filter((step) => step !== id))}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {isAdmin && environments.some((env) => !promotionPath.includes(env.id)) && (
+          <div className="mt-4">
+            <p className="text-xs font-medium text-slate-600 dark:text-slate-300 mb-2">Not on the path</p>
+            <div className="flex flex-wrap gap-2">
+              {environments.filter((env) => !promotionPath.includes(env.id)).map((env) => (
+                <button
+                  key={env.id}
+                  type="button"
+                  className="btn-secondary text-xs"
+                  onClick={() => setPromotionPath([...promotionPath, env.id])}
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add {env.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* RBAC */}
@@ -990,11 +1497,17 @@ export function SettingsPage() {
                 <th className="px-4 py-3 font-semibold text-slate-700 dark:text-slate-300">User</th>
                 <th className="px-4 py-3 font-semibold text-slate-700 dark:text-slate-300">Email</th>
                 <th className="px-4 py-3 font-semibold text-slate-700 dark:text-slate-300">Role</th>
+                <th className="px-4 py-3 font-semibold text-slate-700 dark:text-slate-300">Environments</th>
                 <th className="px-4 py-3 font-semibold text-slate-700 dark:text-slate-300 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {users.map((u) => (
+              {roster.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-500">No signed-in users yet.</td>
+                </tr>
+              )}
+              {roster.map((u) => (
                 <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
@@ -1006,8 +1519,9 @@ export function SettingsPage() {
                   </td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{u.email}</td>
                   <td className="px-4 py-3"><span className="badge bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300">{u.role}</span></td>
+                  <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{envSummary(u)}</td>
                   <td className="px-4 py-3 text-right">
-                    <button onClick={() => openEdit(u)} className="btn-ghost p-1.5" aria-label={`Edit ${u.name}`}><Edit3 className="w-4 h-4" /></button>
+                    <button onClick={() => openEdit(u)} className="btn-ghost p-1.5" aria-label={`Edit ${u.name}`} disabled={!isAdmin && u.id !== currentUser.id}><Edit3 className="w-4 h-4" /></button>
                   </td>
                 </tr>
               ))}
@@ -1017,12 +1531,9 @@ export function SettingsPage() {
         <div className="mt-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
           <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">Available Roles</p>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs text-slate-600 dark:text-slate-400">
-            <div><strong className="text-slate-900 dark:text-white">Administrator</strong> — Full access</div>
-            <div><strong className="text-slate-900 dark:text-white">Agent Designer</strong> — Create/edit agents</div>
-            <div><strong className="text-slate-900 dark:text-white">Workflow Designer</strong> — Create workflows</div>
-            <div><strong className="text-slate-900 dark:text-white">Operator</strong> — Run & monitor</div>
-            <div><strong className="text-slate-900 dark:text-white">Approver</strong> — Review outputs</div>
-            <div><strong className="text-slate-900 dark:text-white">Viewer</strong> — Read-only</div>
+            {ROLE_GUIDE.map((item) => (
+              <div key={item.role}><strong className="text-slate-900 dark:text-white">{item.role}</strong> — {item.summary}</div>
+            ))}
           </div>
         </div>
       </div>
@@ -1037,7 +1548,7 @@ export function SettingsPage() {
                   <ShieldCheck className="w-5 h-5 text-slate-700 dark:text-slate-300" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-slate-900 dark:text-white">Edit User Role</h3>
+                  <h3 className="text-base font-semibold text-slate-900 dark:text-white">Edit User</h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400">{editingUser.name}</p>
                 </div>
               </div>
@@ -1058,7 +1569,7 @@ export function SettingsPage() {
                 <input className="input" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
               </Field>
               <Field label="Role">
-                <select className="input" value={editRole} onChange={(e) => setEditRole(e.target.value as typeof editRole)}>
+                <select className="input" value={editRole} onChange={(e) => setEditRole(e.target.value as typeof editRole)} disabled={!isAdmin}>
                   <option value="Administrator">Administrator</option>
                   <option value="Agent Designer">Agent Designer</option>
                   <option value="Workflow Designer">Workflow Designer</option>
@@ -1067,6 +1578,26 @@ export function SettingsPage() {
                   <option value="Viewer">Viewer</option>
                 </select>
               </Field>
+              {isAdmin && editRole !== 'Administrator' && (
+                <div>
+                  <p className="label mb-2">Environment access</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {environments.map((env) => (
+                      <label key={env.id} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={editAllowed.includes(env.id)}
+                          onChange={() => setEditAllowed((prev) => prev.includes(env.id) ? prev.filter((id) => id !== env.id) : [...prev, env.id])}
+                        />
+                        {env.name}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {isAdmin && editRole === 'Administrator' && (
+                <p className="text-xs text-slate-500 dark:text-slate-400">Administrators can access every environment.</p>
+              )}
               </>
               )}
             </div>
@@ -1091,30 +1622,31 @@ export function SettingsPage() {
         </div>
         <div className="space-y-4">
           <Field label="Workspace Name">
-            <input className="input" value={wsName} onChange={(e) => setWsName(e.target.value)} />
+            <input className="input" value={wsName} onChange={(e) => setWsName(e.target.value)} disabled={!isAdmin} />
           </Field>
           <Field label="Default Environment">
-            <select className="input" value={wsEnv} onChange={(e) => setWsEnv(e.target.value as typeof wsEnv)}>
-              <option value="production">Production</option>
-              <option value="uat">UAT</option>
-              <option value="qa">QA</option>
-              <option value="development">Development</option>
+            <select className="input" value={wsEnv} onChange={(e) => setWsEnv(e.target.value)} disabled={!isAdmin}>
+              {environments.map((env) => (
+                <option key={env.id} value={env.id}>{env.name}</option>
+              ))}
             </select>
           </Field>
           <Field label="Default Logging Level">
-            <select className="input" value={wsLog} onChange={(e) => setWsLog(e.target.value as typeof wsLog)}>
+            <select className="input" value={wsLog} onChange={(e) => setWsLog(e.target.value as typeof wsLog)} disabled={!isAdmin}>
               <option value="info">Info</option>
               <option value="debug">Debug</option>
               <option value="warning">Warning</option>
               <option value="error">Error</option>
             </select>
           </Field>
-          <button
-            onClick={() => saveWorkspaceSettings({ name: wsName, environment: wsEnv, loggingLevel: wsLog })}
-            className="btn-primary"
-          >
-            <Save className="w-4 h-4" /> Save Settings
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => saveWorkspaceSettings({ name: wsName, environment: wsEnv, loggingLevel: wsLog })}
+              className="btn-primary"
+            >
+              <Save className="w-4 h-4" /> Save Settings
+            </button>
+          )}
         </div>
       </div>
     </div>

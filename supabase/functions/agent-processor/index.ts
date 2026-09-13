@@ -6,12 +6,15 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const VALID_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "gpt-4.1-mini", "gpt-4.1"];
 const FALLBACK_MODEL = "gpt-4o-mini";
+
+function isSafeModelId(value: string): boolean {
+  return /^[a-zA-Z0-9._:-]{1,80}$/.test(value);
+}
 
 function resolveModel(envModel: string | undefined): string {
   if (!envModel) return FALLBACK_MODEL;
-  if (VALID_MODELS.includes(envModel)) return envModel;
+  if (isSafeModelId(envModel)) return envModel;
   return FALLBACK_MODEL;
 }
 
@@ -24,7 +27,7 @@ async function callLlm(
   requestedModel?: string,
 ): Promise<{ llmJson: Record<string, unknown> | null; usedModel: string; error: string | null }> {
   const envModel = Deno.env.get("LLM_MODEL");
-  const preferred = requestedModel && VALID_MODELS.includes(requestedModel)
+  const preferred = requestedModel && isSafeModelId(requestedModel)
     ? requestedModel
     : resolveModel(envModel);
   const models = [preferred];

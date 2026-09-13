@@ -4,10 +4,14 @@ import { StatusBadge } from '@/components/StatusBadge';
 import {
   ArrowLeft, Clock, Zap, Coins, CheckCircle2, XCircle, Play, RotateCw,
   Download, ChevronDown, ChevronRight, AlertCircle, User, Cpu, Wrench,
-  BookOpen, Quote,
+  BookOpen, Quote, GitCompare,
 } from 'lucide-react';
 import { downloadText } from '@/lib/download';
+import { ApprovalActions } from '@/components/ApprovalActions';
 import { findPlaywrightReportOutput, PlaywrightReportButton } from '@/components/PlaywrightReportButton';
+import { formatRunOutput, reviewOutputFromRun } from '@/lib/output';
+import { canRole } from '@/lib/roles';
+import { isServerTriggered, siblingRuns } from '@/lib/compareRuns';
 import type { NodeExecution } from '@/types';
 
 export function RunDetailsPage() {
@@ -18,6 +22,8 @@ export function RunDetailsPage() {
   const replayFrom = useStore((s) => s.replayFrom);
   const rerunFrom = useStore((s) => s.rerunFrom);
   const runningWorkflowId = useStore((s) => s.runningWorkflowId);
+  const canRun = canRole(useStore((s) => s.currentUser.role), 'workflows.run');
+  const setCompareRuns = useStore((s) => s.setCompareRuns);
 
   const run = runs.find((r) => r.id === selectedRunId);
   const [expandedNode, setExpandedNode] = useState<string | null>(null);
@@ -33,6 +39,8 @@ export function RunDetailsPage() {
   }
 
   const filteredLogs = run.logs.filter((l) => logFilter === 'all' || l.level === logFilter);
+  const reviewOutput = run.status === 'waiting-approval' ? reviewOutputFromRun(run) : undefined;
+  const peers = siblingRuns(run, runs);
 
   const handleDownloadLogs = () => {
     const text = run.logs.map((l) => `[${l.timestamp}] [${l.level.toUpperCase()}] [${l.source}] ${l.message}`).join('\n');
@@ -49,30 +57,64 @@ export function RunDetailsPage() {
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Run Details</h1>
             <StatusBadge status={run.status} />
+            {isServerTriggered(run.triggeredBy) && (
+              <span className="badge bg-sky-50 dark:bg-sky-950 text-sky-700 dark:text-sky-300">Server</span>
+            )}
           </div>
           <p className="text-sm text-slate-500 dark:text-slate-400">{run.workflowName} · v{run.workflowVersion} · {run.id}</p>
         </div>
-        <div className="ml-auto flex gap-2">
-          <button
-            onClick={() => rerunFrom(run.id)}
-            disabled={run.status !== 'failed' || !!runningWorkflowId}
-            className="btn-secondary"
-            aria-label="Retry failed run"
-          >
-            <RotateCw className="w-4 h-4" /> Retry Failed
-          </button>
-          <button
-            onClick={() => rerunFrom(run.id)}
-            disabled={!!runningWorkflowId}
-            className="btn-secondary"
-            aria-label="Re-run workflow"
-          >
-            <Play className="w-4 h-4" /> Re-run
-          </button>
+        <div className="ml-auto flex flex-wrap justify-end gap-2">
+          {canRun && (
+            <button
+              onClick={() => rerunFrom(run.id)}
+              disabled={run.status !== 'failed' || !!runningWorkflowId}
+              className="btn-secondary"
+              aria-label="Retry failed run"
+            >
+              <RotateCw className="w-4 h-4" /> Retry Failed
+            </button>
+          )}
+          {canRun && (
+            <button
+              onClick={() => rerunFrom(run.id)}
+              disabled={!!runningWorkflowId}
+              className="btn-secondary"
+              aria-label="Re-run workflow"
+            >
+              <Play className="w-4 h-4" /> Re-run
+            </button>
+          )}
+          {peers.length > 0 && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setCompareRuns(run.id, peers[0].id)}
+            >
+              <GitCompare className="w-4 h-4" /> Compare
+            </button>
+          )}
+          <ApprovalActions runId={run.id} />
           <PlaywrightReportButton output={findPlaywrightReportOutput(run.nodeExecutions)} />
           <button onClick={handleDownloadLogs} className="btn-secondary"><Download className="w-4 h-4" /> Logs</button>
         </div>
       </div>
+
+      {run.status === 'waiting-approval' && (
+        <div className="card p-4 border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/40 space-y-3">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-purple-800 dark:text-purple-200">Human approval required</p>
+            <p className="text-xs text-purple-700 dark:text-purple-300 mt-1">
+              This run is paused. Approve to continue from the next node, or reject to fail it.
+            </p>
+          </div>
+          {reviewOutput && (
+            <pre className="max-h-48 overflow-auto rounded-lg border border-purple-200 dark:border-purple-800 bg-white/70 dark:bg-slate-950/50 px-3 py-2 text-xs font-mono text-slate-700 dark:text-slate-200 whitespace-pre-wrap">
+              {formatRunOutput(reviewOutput)}
+            </pre>
+          )}
+          <ApprovalActions runId={run.id} />
+        </div>
+      )}
 
       {/* Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -98,7 +140,7 @@ export function RunDetailsPage() {
               expanded={expandedNode === ne.nodeId}
               onToggle={() => setExpandedNode(expandedNode === ne.nodeId ? null : ne.nodeId)}
               onReplay={() => replayFrom(run.id, ne.nodeId)}
-              canReplay={!runningWorkflowId}
+              canReplay={canRun && !runningWorkflowId}
             />
           ))}
         </div>

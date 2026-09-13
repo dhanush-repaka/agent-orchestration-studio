@@ -11,7 +11,7 @@ export function userFromAuth(authUser: AuthUser): User {
     id: authUser.id,
     name,
     email,
-    role: 'Administrator',
+    role: 'Viewer',
   };
 }
 

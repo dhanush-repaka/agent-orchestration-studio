@@ -1,14 +1,19 @@
-import { useState, useId, useRef, cloneElement, isValidElement, type ReactElement } from 'react';
+import { useState, useId, useRef, useEffect, cloneElement, isValidElement, type ReactElement } from 'react';
 import { useStore } from '@/store';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import {
-  AGENT_TYPES, MODEL_PROVIDERS, TOOL_CATALOG, KNOWLEDGE_CATALOG,
+  AGENT_TYPES, TOOL_CATALOG, KNOWLEDGE_CATALOG,
   PROMPT_VARIABLES, knowledgeCatalogType,
   type Agent, type AgentInput, type DataType, type OutputFormat, type MemoryType, type KnowledgeSource,
 } from '@/types';
+import { FALLBACK_STUDIO_MODEL, providerLabel } from '@/lib/models';
+import { allowedEnvironmentIds, canAccessEnvironment } from '@/lib/environments';
+import { canRole } from '@/lib/roles';
+import { LIVE_TOOL_HELP } from '@/lib/tools';
+import { isLiveKnowledge, knowledgeHelp } from '@/lib/knowledge';
 import {
-  ArrowLeft, Save, Info, Cpu, MessageSquareText, ArrowDownToLine,
+  ArrowLeft, Save, Info, Cpu, MessageSquareText, ArrowDownToLine, Upload, Undo2,
   ArrowUpFromLine, Wrench, BookOpen, Brain, ShieldCheck, FlaskConical,
   Plus, Trash2, Play, Clock, Coins, Zap, AlertCircle, CheckCircle2,
 } from 'lucide-react';
@@ -36,10 +41,18 @@ export function AgentConfigPage() {
   const agents = useStore((s) => s.agents);
   const selectedAgentId = useStore((s) => s.selectedAgentId);
   const updateAgent = useStore((s) => s.updateAgent);
+  const publishAgent = useStore((s) => s.publishAgent);
+  const unpublishAgent = useStore((s) => s.unpublishAgent);
   const setPage = useStore((s) => s.setPage);
   const addToast = useStore((s) => s.addToast);
   const currentUser = useStore((s) => s.currentUser);
+  const canWrite = canRole(currentUser.role, 'agents.write');
+  const environments = useStore((s) => s.environments);
+  const setEnvironment = useStore((s) => s.setEnvironment);
   const addEvaluationCase = useStore((s) => s.addEvaluationCase);
+  const studioModel = useStore((s) => s.studioModel);
+  const llmModels = useStore((s) => s.llmModels);
+  const hydrateStudioModel = useStore((s) => s.hydrateStudioModel);
 
   const agent = agents.find((a) => a.id === selectedAgentId);
   const [section, setSection] = useState<Section>('basic');
@@ -53,6 +66,44 @@ export function AgentConfigPage() {
   const userPromptRef = useRef<HTMLTextAreaElement>(null);
   const contextPromptRef = useRef<HTMLTextAreaElement>(null);
   const focusedPrompt = useRef<'system' | 'user' | 'context'>('user');
+
+  useEffect(() => {
+    void hydrateStudioModel();
+  }, [hydrateStudioModel]);
+
+  useEffect(() => {
+    if (agent?.environment && canAccessEnvironment(currentUser, agent.environment, environments)) {
+      const current = useStore.getState().environment;
+      if (current !== agent.environment) setEnvironment(agent.environment);
+    }
+  }, [agent?.environment, currentUser, environments, setEnvironment]);
+
+  useEffect(() => {
+    if (!llmModels.length) return;
+    setDraft((current) => {
+      if (!current) return current;
+      if (llmModels.some((m) => m.provider === current.modelProvider && m.model === current.modelName)) return current;
+      const active = llmModels.find((m) => m.active) ?? llmModels[0];
+      return {
+        ...current,
+        modelProvider: active.provider,
+        modelName: active.model,
+        apiEndpoint: active.baseUrl,
+      };
+    });
+  }, [llmModels]);
+
+  const liveModel = studioModel ?? FALLBACK_STUDIO_MODEL;
+  const availableModels = llmModels.length ? llmModels : [{
+    id: 'fallback',
+    name: providerLabel(liveModel.provider),
+    provider: liveModel.provider,
+    model: liveModel.model,
+    baseUrl: liveModel.baseUrl,
+    source: 'studio' as const,
+    active: true,
+  }];
+  const availableProviders = Array.from(new Set(availableModels.map((m) => m.provider)));
 
   if (!agent || !draft) {
     return (
@@ -116,11 +167,29 @@ export function AgentConfigPage() {
     addToast('Agent configuration saved', 'success');
   };
 
+  const handlePublish = () => {
+    updateAgent(agent.id, draft);
+    const saved = useStore.getState().agents.find((a) => a.id === agent.id);
+    if (!saved) return;
+    if (saved.status === 'published') {
+      unpublishAgent(saved.id);
+      setDraft({ ...draft, status: 'draft' });
+      return;
+    }
+    if (publishAgent(saved.id)) {
+      setDraft({ ...draft, status: 'published' });
+    }
+  };
+
   const goBack = () => {
     setPage('agents');
   };
 
   const handleTest = async () => {
+    if (!canWrite) {
+      addToast('Your role cannot test agents', 'error');
+      return;
+    }
     setTestRunning(true);
     setTestResult(null);
     setTestError(null);
@@ -207,7 +276,18 @@ export function AgentConfigPage() {
           </div>
         </div>
         <div className="ml-auto flex gap-2">
-          <button onClick={handleSave} className="btn-primary" aria-label="Save agent"><Save className="w-4 h-4" /> Save</button>
+          {canWrite ? (
+            <>
+              <button onClick={handleSave} className="btn-secondary" aria-label="Save agent"><Save className="w-4 h-4" /> Save</button>
+              {draft.status === 'published' ? (
+                <button onClick={handlePublish} className="btn-secondary" aria-label="Unpublish agent"><Undo2 className="w-4 h-4" /> Unpublish</button>
+              ) : (
+                <button onClick={handlePublish} className="btn-primary" aria-label="Publish agent"><Upload className="w-4 h-4" /> Publish</button>
+              )}
+            </>
+          ) : (
+            <span className="text-xs text-slate-500 dark:text-slate-400 self-center">View only</span>
+          )}
         </div>
       </div>
 
@@ -258,11 +338,10 @@ export function AgentConfigPage() {
                     </select>
                   </Field>
                   <Field label="Environment">
-                    <select className="input" value={draft.environment} onChange={(e) => patch({ environment: e.target.value as Agent['environment'] })}>
-                      <option value="development">Development</option>
-                      <option value="qa">QA</option>
-                      <option value="uat">UAT</option>
-                      <option value="production">Production</option>
+                    <select className="input" value={draft.environment} onChange={(e) => patch({ environment: e.target.value })}>
+                      {environments.filter((env) => allowedEnvironmentIds(currentUser, environments).includes(env.id) || env.id === draft.environment).map((env) => (
+                        <option key={env.id} value={env.id}>{env.name}</option>
+                      ))}
                     </select>
                   </Field>
                 </div>
@@ -274,18 +353,55 @@ export function AgentConfigPage() {
 
             {section === 'model' && (
               <SectionCard title="AI Model Configuration" icon={Cpu}>
+                <p className="text-xs text-slate-500 dark:text-slate-400 -mt-1 mb-1">
+                  Only models added under Models are listed here.
+                </p>
                 <div className="grid grid-cols-2 gap-4">
                   <Field label="Model Provider">
-                    <select className="input" value={draft.modelProvider} onChange={(e) => patch({ modelProvider: e.target.value as Agent['modelProvider'] })}>
-                      {MODEL_PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
+                    <select
+                      className="input"
+                      value={draft.modelProvider}
+                      onChange={(e) => {
+                        const provider = e.target.value as Agent['modelProvider'];
+                        const match = availableModels.find((m) => m.provider === provider);
+                        patch({
+                          modelProvider: provider,
+                          modelName: match?.model ?? draft.modelName,
+                          apiEndpoint: match?.baseUrl ?? draft.apiEndpoint,
+                        });
+                      }}
+                    >
+                      {availableProviders.map((p) => (
+                        <option key={p} value={p}>{providerLabel(p)}</option>
+                      ))}
                     </select>
                   </Field>
-                  <Field label="Model Name"><input className="input" value={draft.modelName} onChange={(e) => patch({ modelName: e.target.value })} /></Field>
+                  <Field label="Model Name">
+                    <select
+                      className="input"
+                      value={draft.modelName}
+                      onChange={(e) => {
+                        const match = availableModels.find((m) => m.model === e.target.value && m.provider === draft.modelProvider)
+                          ?? availableModels.find((m) => m.model === e.target.value);
+                        patch({ modelName: e.target.value, apiEndpoint: match?.baseUrl ?? draft.apiEndpoint });
+                      }}
+                    >
+                      {availableModels.filter((m) => m.provider === draft.modelProvider).map((m) => (
+                        <option key={m.id} value={m.model}>{m.model}</option>
+                      ))}
+                    </select>
+                  </Field>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <Field label="API Endpoint"><input className="input" value={draft.apiEndpoint ?? ''} onChange={(e) => patch({ apiEndpoint: e.target.value })} /></Field>
-                  <Field label="Deployment Name"><input className="input" value={draft.deploymentName ?? ''} onChange={(e) => patch({ deploymentName: e.target.value })} /></Field>
+                <div className="grid grid-cols-1 gap-4">
+                  <Field label="API Endpoint">
+                    <input className="input bg-slate-50 dark:bg-slate-800/60" value={availableModels.find((m) => m.model === draft.modelName)?.baseUrl ?? liveModel.baseUrl} readOnly />
+                  </Field>
                 </div>
+                {!liveModel.configured && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    LLM_API_KEY is not set on the studio function. Agent runs will fail until that secret is configured.
+                  </p>
+                )}
                 <div className="grid grid-cols-3 gap-4">
                   <Field label={`Temperature: ${draft.temperature}`}><input type="range" min="0" max="2" step="0.1" className="w-full" value={draft.temperature} onChange={(e) => patch({ temperature: parseFloat(e.target.value) })} /></Field>
                   <Field label={`Top P: ${draft.topP}`}><input type="range" min="0" max="1" step="0.05" className="w-full" value={draft.topP} onChange={(e) => patch({ topP: parseFloat(e.target.value) })} /></Field>
@@ -397,7 +513,7 @@ export function AgentConfigPage() {
 
             {section === 'tools' && (
               <SectionCard title="Tools Configuration" icon={Wrench}>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">Attach tools to this agent. Toggle to enable.</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">{LIVE_TOOL_HELP} Toggle to enable.</p>
                 <div className="grid grid-cols-2 gap-2">
                   {TOOL_CATALOG.map((t) => {
                     const existing = draft.tools.find((tool) => tool.name === t);
@@ -429,15 +545,16 @@ export function AgentConfigPage() {
 
             {section === 'knowledge' && (
               <SectionCard title="Knowledge Configuration" icon={BookOpen}>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">Connect knowledge sources for retrieval-augmented generation.</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">Azure DevOps and API URLs are fetched at runtime. Other sources are labels only.</p>
                 <div className="grid grid-cols-2 gap-2 mb-4">
                   {KNOWLEDGE_CATALOG.map((k) => {
-                    const selected = draft.knowledge.some((ks) => ks.type === knowledgeCatalogType(k));
+                    const type = knowledgeCatalogType(k);
+                    const selected = draft.knowledge.some((ks) => ks.type === type);
+                    const live = isLiveKnowledge(type);
                     return (
                       <button
                         key={k}
                         onClick={() => {
-                          const type = knowledgeCatalogType(k);
                           const selectedNow = draft.knowledge.some((ks) => ks.type === type);
                           if (selectedNow) {
                             patch({ knowledge: draft.knowledge.filter((ks) => ks.type !== type) });
@@ -462,10 +579,28 @@ export function AgentConfigPage() {
                           <span className="text-slate-700 dark:text-slate-300">{k}</span>
                           {selected && <CheckCircle2 className="w-4 h-4 text-brand-600 ml-auto" />}
                         </div>
+                        <p className={`text-[11px] mt-1 ${live ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-400'}`}>
+                          {live ? 'Fetched at runtime' : 'Listed only'}
+                        </p>
                       </button>
                     );
                   })}
                 </div>
+                {draft.knowledge.filter((ks) => ks.type === 'api').map((ks) => (
+                  <Field key={ks.id} label="API collection URL">
+                    <input
+                      className="input"
+                      placeholder="https://example.com/collection.json"
+                      value={ks.collection ?? ''}
+                      onChange={(e) => patch({
+                        knowledge: draft.knowledge.map((item) => item.id === ks.id ? { ...item, collection: e.target.value } : item),
+                      })}
+                    />
+                  </Field>
+                ))}
+                {draft.knowledge[0] && (
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">{knowledgeHelp(draft.knowledge[0].type)}</p>
+                )}
                 <div className="grid grid-cols-2 gap-4">
                   <Field label="Retrieval Top K"><input type="number" className="input" value={draft.knowledge[0]?.topK ?? 5} onChange={(e) => patchKnowledgeDefaults({ topK: parseInt(e.target.value) || 0 })} /></Field>
                   <Field label="Similarity Threshold"><input type="number" step="0.05" className="input" value={draft.knowledge[0]?.similarityThreshold ?? 0.8} onChange={(e) => patchKnowledgeDefaults({ similarityThreshold: parseFloat(e.target.value) || 0 })} /></Field>

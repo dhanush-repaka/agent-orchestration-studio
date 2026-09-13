@@ -1,4 +1,5 @@
 import { useStore } from '@/store';
+import { ApprovalActions } from '@/components/ApprovalActions';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Icon } from '@/components/Icon';
 import {
@@ -7,6 +8,8 @@ import {
 } from 'lucide-react';
 import { useMemo } from 'react';
 import type { Agent, WorkflowRun } from '@/types';
+import { envLabel, inCurrentEnvironment } from '@/lib/environments';
+import { canRole } from '@/lib/roles';
 
 function isToday(iso: string): boolean {
   const d = new Date(iso);
@@ -109,9 +112,11 @@ export function DashboardPage() {
   const setSelectedAgent = useStore((s) => s.setSelectedAgent);
   const setSelectedRun = useStore((s) => s.setSelectedRun);
 
-  const agents = store.agents;
-  const workflows = store.workflows;
-  const runs = store.runs;
+  const environment = store.environment;
+  const envDefs = store.environments;
+  const agents = store.agents.filter((a) => inCurrentEnvironment(a.environment, environment));
+  const workflows = store.workflows.filter((w) => inCurrentEnvironment(w.environment, environment));
+  const runs = store.runs.filter((r) => inCurrentEnvironment(r.environment, environment));
 
   const stats = useMemo(() => {
     const runsToday = runs.filter((r) => isToday(r.startTime));
@@ -238,11 +243,13 @@ export function DashboardPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Dashboard</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">Overview of your AI agent orchestration platform</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Overview for {envLabel(environment, envDefs)}</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setPage('agents')} className="btn-secondary"><Bot className="w-4 h-4" /> New Agent</button>
-          <button onClick={() => { setSelectedWorkflow('w1'); setPage('workflow-builder'); }} className="btn-primary"><Workflow className="w-4 h-4" /> Open Builder</button>
+          {canRole(store.currentUser.role, 'agents.write') && (
+            <button onClick={() => setPage('agents')} className="btn-secondary"><Bot className="w-4 h-4" /> New Agent</button>
+          )}
+          <button onClick={() => setPage('workflows')} className="btn-primary"><Workflow className="w-4 h-4" /> Manage Workflows</button>
         </div>
       </div>
 
@@ -413,15 +420,21 @@ export function DashboardPage() {
         </div>
 
         <div className="card p-5">
-          <h3 className="section-title mb-3">Pending Approvals</h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="section-title">Pending Approvals</h3>
+            <button type="button" onClick={() => setPage('approvals')} className="text-xs text-brand-600 dark:text-brand-400 hover:underline">
+              Open inbox
+            </button>
+          </div>
           <div className="space-y-2">
             {stats.pendingApprovals.length > 0 ? stats.pendingApprovals.map((r) => (
-              <div key={r.id} className="flex items-center gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800">
+              <div key={r.id} className="flex flex-wrap items-center gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800">
                 <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
-                <div className="flex-1">
+                <div className="flex-1 min-w-40">
                   <p className="text-sm font-medium text-amber-900 dark:text-amber-200">Human Approval Required</p>
                   <p className="text-xs text-amber-700 dark:text-amber-300">{r.workflowName} · Run #{r.id}</p>
                 </div>
+                <ApprovalActions runId={r.id} />
                 <button onClick={() => { setSelectedRun(r.id); setPage('run-details'); }} className="btn-secondary text-xs py-1.5">Review</button>
               </div>
             )) : (

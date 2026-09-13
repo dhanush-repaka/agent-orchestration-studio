@@ -7,9 +7,12 @@ import { LoginPage } from '@/pages/LoginPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { AgentLibraryPage } from '@/pages/AgentLibraryPage';
 import { AgentConfigPage } from '@/pages/AgentConfigPage';
+import { WorkflowsPage } from '@/pages/WorkflowsPage';
 import { WorkflowBuilderPage } from '@/pages/WorkflowBuilderPage';
 import { WorkflowRunsPage } from '@/pages/WorkflowRunsPage';
 import { RunDetailsPage } from '@/pages/RunDetailsPage';
+import { ApprovalsPage } from '@/pages/ApprovalsPage';
+import { RunComparePage } from '@/pages/RunComparePage';
 import {
   ToolsPage, PromptsPage, KnowledgePage, ModelsPage, CredentialsPage,
   EvaluationsPage, MonitoringPage, AuditPage, SettingsPage,
@@ -23,7 +26,12 @@ function App() {
   const hydrateAgents = useStore((s) => s.hydrateAgents);
   const hydrateWorkflows = useStore((s) => s.hydrateWorkflows);
   const hydrateRuns = useStore((s) => s.hydrateRuns);
+  const resumeInterruptedRuns = useStore((s) => s.resumeInterruptedRuns);
   const hydrateCatalogs = useStore((s) => s.hydrateCatalogs);
+  const hydrateUsers = useStore((s) => s.hydrateUsers);
+  const hydrateEnvironments = useStore((s) => s.hydrateEnvironments);
+  const hydrateAuditLogs = useStore((s) => s.hydrateAuditLogs);
+  const hydrateStudioModel = useStore((s) => s.hydrateStudioModel);
   const drainTriggers = useStore((s) => s.drainTriggers);
   const tickSchedules = useStore((s) => s.tickSchedules);
 
@@ -39,9 +47,13 @@ function App() {
     if (authStatus !== 'signed-in') return;
     hydrateAgents();
     hydrateWorkflows();
-    hydrateRuns();
+    void hydrateRuns().then(() => useStore.getState().resumeInterruptedRuns());
     hydrateCatalogs();
-  }, [authStatus, hydrateAgents, hydrateWorkflows, hydrateRuns, hydrateCatalogs]);
+    void hydrateUsers();
+    void hydrateEnvironments();
+    void hydrateAuditLogs();
+    void hydrateStudioModel();
+  }, [authStatus, hydrateAgents, hydrateWorkflows, hydrateRuns, resumeInterruptedRuns, hydrateCatalogs, hydrateUsers, hydrateEnvironments, hydrateAuditLogs, hydrateStudioModel]);
 
   useEffect(() => {
     if (authStatus !== 'signed-in') return;
@@ -77,9 +89,12 @@ function App() {
       case 'dashboard': return <DashboardPage />;
       case 'agents': return <AgentLibraryPage />;
       case 'agent-config': return <AgentConfigPage />;
+      case 'workflows': return <WorkflowsPage />;
       case 'workflow-builder': return <WorkflowBuilderPage />;
       case 'workflow-runs': return <WorkflowRunsPage />;
       case 'run-details': return <RunDetailsPage />;
+      case 'approvals': return <ApprovalsPage />;
+      case 'run-compare': return <RunComparePage />;
       case 'tools': return <ToolsPage />;
       case 'prompts': return <PromptsPage />;
       case 'knowledge': return <KnowledgePage />;

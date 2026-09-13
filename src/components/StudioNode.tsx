@@ -4,6 +4,8 @@ import { useStore } from '@/store';
 import { Icon } from '@/components/Icon';
 import { getStatusStyle } from '@/components/StatusBadge';
 import { previewRunOutput } from '@/lib/output';
+import { BRANCH_NODE_TYPES } from '@/lib/graph';
+import { isStubNodeType } from '@/lib/nodes';
 import type { WorkflowNodeData } from '@/types';
 import { AlertCircle } from 'lucide-react';
 
@@ -42,22 +44,29 @@ function StudioNodeComponent({ id, data, selected }: NodeProps) {
     ? (nodeData.agentType || nodeData.nodeType)
     : nodeData.nodeType;
   const preview = runError || (runOutput ? previewRunOutput(runOutput, 160) : '');
+  const isBranch = BRANCH_NODE_TYPES.has(nodeData.nodeType);
 
   return (
     <div
       className={`relative rounded-xl border-2 px-3 py-2.5 min-w-48 max-w-64 transition-all ${kindColor} ${selected ? 'ring-2 ring-brand-400 ring-offset-2 dark:ring-offset-slate-950' : ''} ${isRunning ? 'ring-2 ring-amber-400 animate-pulse-soft' : ''} ${isFailed ? 'ring-2 ring-red-400' : ''} ${isWaiting ? 'ring-2 ring-purple-400' : ''}`}
     >
       {nodeData.nodeType !== 'start' && (
-        <Handle type="target" position={Position.Left} className="w-3 h-3 bg-slate-400 dark:bg-slate-500 border-2 border-white dark:border-slate-900" />
+        <Handle
+          id="in"
+          type="target"
+          position={Position.Left}
+          className="studio-handle"
+          aria-label="Incoming connection"
+        />
       )}
 
-      {nodeData.nodeType === 'condition' || nodeData.nodeType === 'switch' || nodeData.nodeType === 'router' ? (
+      {isBranch ? (
         <>
-          <Handle id="out-true" type="source" position={Position.Right} style={{ top: '30%' }} className="w-3 h-3 bg-emerald-500 border-2 border-white dark:border-slate-900" />
-          <Handle id="out-false" type="source" position={Position.Right} style={{ top: '70%' }} className="w-3 h-3 bg-red-500 border-2 border-white dark:border-slate-900" />
+          <Handle id="out-true" type="source" position={Position.Right} style={{ top: '30%' }} className="studio-handle studio-handle-true" aria-label="True path" />
+          <Handle id="out-false" type="source" position={Position.Right} style={{ top: '70%' }} className="studio-handle studio-handle-false" aria-label="False path" />
         </>
       ) : nodeData.nodeType !== 'end' ? (
-        <Handle type="source" position={Position.Right} className="w-3 h-3 bg-brand-500 border-2 border-white dark:border-slate-900" />
+        <Handle id="out" type="source" position={Position.Right} className="studio-handle studio-handle-out" aria-label="Outgoing connection" />
       ) : null}
 
       <div className="flex items-center gap-2.5">
@@ -66,7 +75,9 @@ function StudioNodeComponent({ id, data, selected }: NodeProps) {
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">{nodeData.label}</p>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{subtitle}</p>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+            {isStubNodeType(nodeData.nodeType) ? 'Does not run yet' : subtitle}
+          </p>
         </div>
         {notConfigured && <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />}
       </div>

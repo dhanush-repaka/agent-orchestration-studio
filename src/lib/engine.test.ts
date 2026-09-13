@@ -746,3 +746,96 @@ describe('user story workflow', () => {
       .toContain('@playwright/test');
   });
 });
+
+describe('data nodes and loops', () => {
+  it('transforms previous output and loops a body node', async () => {
+    const wf: Workflow = {
+      ...workflow(),
+      nodes: [
+        node('start', 'start', 'Start'),
+        {
+          ...node('loop', 'loop', 'Loop'),
+          data: { kind: 'control', nodeType: 'loop', label: 'Loop', status: 'ready', config: { timeoutSec: 1, retryCount: 0, loggingLevel: 'info', loopPath: 'items' } },
+        },
+        {
+          ...node('map', 'transform', 'Each'),
+          data: { kind: 'data', nodeType: 'transform', label: 'Each', status: 'ready', config: { timeoutSec: 1, retryCount: 0, loggingLevel: 'info', expression: '{"item":{{loop_item}}}' } },
+        },
+        node('end', 'end', 'End'),
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'loop' },
+        { id: 'e2', source: 'loop', target: 'map' },
+        { id: 'e3', source: 'map', target: 'end' },
+      ],
+      defaultInput: '{"items":[1,2]}',
+    };
+
+    const run = await executeWorkflow({
+      workflow: wf,
+      agents: [],
+      runtimeInput: '{"items":[1,2]}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: {
+        isCancelled: () => false,
+        onNodeStatus: () => {},
+        waitForApproval: async () => true,
+      },
+    });
+
+    expect(run.status).toBe('completed');
+    const loopOut = run.nodeExecutions.find((n) => n.nodeId === 'loop')?.output ?? '';
+    expect(loopOut).toContain('"loopCount": 2');
+    expect(loopOut).toContain('"item": 2');
+  });
+
+  it('runs parallel branches together then continues at merge', async () => {
+    const started: string[] = [];
+    const wf: Workflow = {
+      ...workflow(),
+      nodes: [
+        node('start', 'start', 'Start'),
+        node('fan', 'parallel', 'Parallel'),
+        {
+          ...node('left', 'transform', 'Left'),
+          data: { kind: 'data', nodeType: 'transform', label: 'Left', status: 'ready', config: { timeoutSec: 1, retryCount: 0, loggingLevel: 'info', expression: '{"side":"left"}' } },
+        },
+        {
+          ...node('right', 'transform', 'Right'),
+          data: { kind: 'data', nodeType: 'transform', label: 'Right', status: 'ready', config: { timeoutSec: 1, retryCount: 0, loggingLevel: 'info', expression: '{"side":"right"}' } },
+        },
+        node('join', 'merge', 'Merge'),
+        node('end', 'end', 'End'),
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'fan' },
+        { id: 'e2', source: 'fan', target: 'left' },
+        { id: 'e3', source: 'fan', target: 'right' },
+        { id: 'e4', source: 'left', target: 'join' },
+        { id: 'e5', source: 'right', target: 'join' },
+        { id: 'e6', source: 'join', target: 'end' },
+      ],
+    };
+
+    const run = await executeWorkflow({
+      workflow: wf,
+      agents: [],
+      runtimeInput: '{}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: {
+        isCancelled: () => false,
+        onNodeStatus: (id) => { started.push(id); },
+        waitForApproval: async () => true,
+      },
+    });
+
+    expect(run.status).toBe('completed');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'left')?.output).toContain('left');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'right')?.output).toContain('right');
+    expect(started).toEqual(expect.arrayContaining(['left', 'right', 'join']));
+  });
+});

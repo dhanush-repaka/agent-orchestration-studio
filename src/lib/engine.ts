@@ -3,6 +3,9 @@ import type {
   LogEntry, NodeStatus, NodeRuntimeConfig, InputBinding, RunStatus,
 } from '../types';
 import { evaluateCondition, getByPath, interpolate, parseJson, type InterpContext } from './interpolate';
+import { applyDataNode, collectBranch, collectLoopBody, parseMaybeJson as parseDataJson, resolveLoopItems, subgraphFromBody } from './dataNodes';
+import { classifyLiveTool, liveToolsOf, parseToolRequest } from './tools';
+import { apiKnowledgeUrls } from './knowledge';
 import { collectAdoAttachments, collectAdoRepoFiles } from './adoArtifacts';
 import { defaultAdoRepoName } from './adoGit';
 import {
@@ -56,6 +59,7 @@ type AgentProcessorResult = {
 
 export type ReplayResume = {
   fromNodeId: string;
+  extraStartNodeIds?: string[];
   nodeOutputs: Record<string, string>;
   priorExecutions: NodeExecution[];
 };
@@ -87,11 +91,7 @@ function sleep(ms: number) {
 }
 
 function parseMaybeJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
+  return parseDataJson(value);
 }
 
 function stringifyOutput(value: unknown): string {
@@ -144,6 +144,9 @@ function buildInterpCtx(
     const n = nodes.get(id);
     nodeMap[id] = { label: n?.data.label ?? id, output: parseMaybeJson(raw) };
   }
+  const rec = workflowInput && typeof workflowInput === 'object' && !Array.isArray(workflowInput)
+    ? workflowInput as Record<string, unknown>
+    : {};
   return {
     workflowInput,
     previousOutput,
@@ -151,6 +154,8 @@ function buildInterpCtx(
     knowledge: agent?.knowledge?.map((k) => `${k.type}/${k.collection ?? ''}`).join(', ') ?? '',
     nodes: nodeMap,
     inputs: resolvedInputs,
+    loopItem: rec.loopItem,
+    loopIndex: typeof rec.loopIndex === 'number' ? rec.loopIndex : undefined,
   };
 }
 
@@ -303,6 +308,13 @@ async function runAgentNode(
   const cfg = asConfig(node.data.config);
   if (!agent) {
     return { output: '{"error":"No agent bound to this node"}', tokens: 0, error: 'No agent bound to this node' };
+  }
+  if (agent.status !== 'published') {
+    return {
+      output: JSON.stringify({ error: `${agent.displayName} is not published` }),
+      tokens: 0,
+      error: `${agent.displayName} is not published. Publish the agent to run it in a workflow.`,
+    };
   }
 
   const upstream = collectUpstream(node.id, workflow, nodeOutputs, nodes, agents);
@@ -520,6 +532,18 @@ async function runAgentNode(
     payload.userPrompt = `${payload.userPrompt ?? ''}\n\nAuthoritative Playwright results (use these; do not write a report that only restates a condition expression):\n${stringifyOutput({ error: 'No Playwright execute result found' })}`;
   }
 
+  const knowledgeBits: string[] = ctx.knowledge ? [ctx.knowledge] : [];
+  for (const url of apiKnowledgeUrls(agent)) {
+    const { ok, data } = await invoke<Record<string, unknown>>('http-request', { method: 'GET', url, headers: {}, body: '' });
+    if (ok && !data.error) {
+      knowledgeBits.push(`${url}: ${stringifyOutput(data)}`);
+      log('info', 'tool', `Fetched knowledge from ${url}`);
+    }
+  }
+  if (knowledgeBits.length) {
+    payload.userPrompt = `${payload.userPrompt ?? ''}\n\nKnowledge context:\n${knowledgeBits.join('\n')}`;
+  }
+
   log('info', 'agent', `Calling ${agent.displayName} (${agent.modelProvider} / ${agent.modelName})`);
   const { ok, data } = await invoke<AgentProcessorResult>('agent-processor', payload as unknown as Record<string, unknown>);
   if (!ok || data.error) {
@@ -544,12 +568,79 @@ async function runAgentNode(
       }),
     }, null, 2);
   }
+  const liveCalls = await invokeLiveTools(enabledTools, agent, cfg, output, workflowInput, invoke);
   return {
-    output,
+    output: liveCalls.output,
     tokens: data.llmUsage?.total_tokens ?? 0,
     model: data.model ?? `${agent.modelProvider} / ${agent.modelName}`,
-    toolCalls: enabledTools.map((t) => ({ tool: t.name, result: 'available' })),
+    toolCalls: liveCalls.toolCalls.length
+      ? liveCalls.toolCalls
+      : enabledTools.map((t) => ({ tool: t.name, result: 'available' })),
   };
+}
+
+async function invokeLiveTools(
+  enabledTools: Agent['tools'],
+  agent: Agent,
+  cfg: NodeRuntimeConfig,
+  llmOutput: string,
+  workflowInput: unknown,
+  invoke: InvokeFn,
+): Promise<{ output: string; toolCalls: { tool: string; result: string }[] }> {
+  const skipped = new Set<string>();
+  if (agent.type === 'Data Retrieval' || agent.type === 'ADO Upload') skipped.add('ado');
+  if (agent.type === 'Playwright Automation') skipped.add('playwright');
+  const tools = liveToolsOf(enabledTools).filter((tool) => !skipped.has(tool.kind));
+  if (!tools.length) return { output: llmOutput, toolCalls: [] };
+
+  const parsed = parseMaybeJson(llmOutput);
+  const request = parseToolRequest(parsed);
+  let output = llmOutput;
+  const toolCalls: { tool: string; result: string }[] = [];
+
+  for (const tool of tools) {
+    const kind = classifyLiveTool(request?.name ?? tool.name) ?? tool.kind;
+    if (kind === 'http') {
+      const url = String(request?.args.url ?? tool.endpoint ?? '').trim();
+      if (!url) continue;
+      const method = String(request?.args.method ?? 'POST');
+      const body = request?.args.body ?? parsed;
+      const { ok, data } = await invoke<Record<string, unknown>>('http-request', {
+        method,
+        url,
+        headers: {},
+        body,
+        credentialId: cfg.httpCredentialId || undefined,
+      });
+      const err = typeof data.error === 'string' ? data.error : undefined;
+      toolCalls.push({ tool: tool.name, result: err ?? `${method} ${url}` });
+      output = JSON.stringify({ llm: parsed, tool: data, error: ok ? undefined : err }, null, 2);
+      continue;
+    }
+    if (kind === 'ado') {
+      const rec = workflowInput && typeof workflowInput === 'object' ? workflowInput as Record<string, unknown> : {};
+      const workItemId = request?.args.workItemId ?? rec.workItemId ?? rec.id;
+      if (workItemId == null) continue;
+      const { ok, data } = await invoke<Record<string, unknown>>('ado-retrieval', {
+        workItemId,
+        adoOrg: cfg.adoOrg || undefined,
+        adoApiVersion: cfg.adoApiVersion || undefined,
+      });
+      const err = typeof data.error === 'string' ? data.error : undefined;
+      toolCalls.push({ tool: tool.name, result: err ?? 'retrieved' });
+      output = JSON.stringify({ llm: parsed, tool: data, error: ok ? undefined : err }, null, 2);
+      continue;
+    }
+    if (kind === 'playwright') {
+      const rec = workflowInput && typeof workflowInput === 'object' ? workflowInput as Record<string, unknown> : {};
+      const baseUrl = String(request?.args.baseUrl ?? rec.baseUrl ?? cfg.playwrightBaseUrl ?? '');
+      const { ok, data } = await invoke<Record<string, unknown>>('playwright-locators', { baseUrl });
+      const err = typeof data.error === 'string' ? data.error : undefined;
+      toolCalls.push({ tool: tool.name, result: err ?? 'locators' });
+      output = JSON.stringify({ llm: parsed, tool: data, error: ok ? undefined : err }, null, 2);
+    }
+  }
+  return { output, toolCalls };
 }
 
 function pickConditionEdges(node: WorkflowNode, edges: WorkflowEdge[], truthy: boolean): WorkflowEdge[] {
@@ -638,8 +729,9 @@ export async function executeWorkflow(opts: {
     addLog('info', 'system', `Workflow started: ${wf.name}`);
   }
 
+  const loopExitsByNode = new Map<string, WorkflowEdge[]>();
   const queue: string[] = opts.resume
-    ? [opts.resume.fromNodeId]
+    ? [opts.resume.fromNodeId, ...(opts.resume.extraStartNodeIds ?? [])]
     : wf.nodes.filter((n) => n.data.nodeType === 'start').map((n) => n.id);
   if (!queue.length && wf.nodes.length) queue.push(wf.nodes[0].id);
 
@@ -944,23 +1036,115 @@ export async function executeWorkflow(opts: {
           break;
         }
         case 'loop': {
-          const ctx = buildInterpCtx(wf, workflowInput, nodeOutputs, nodes, currentId);
-          const fromPath = cfg.loopPath ? getByPath(ctx.previousOutput, cfg.loopPath) : null;
-          const items = Array.isArray(fromPath) ? fromPath : null;
-          const loopCount = items ? items.length : Math.max(1, Math.min(cfg.loopCount ?? 1, 20));
-          output = JSON.stringify({ loopCount, items: items ?? null, path: cfg.loopPath ?? null });
+          const ctx = buildInterpCtx(wf, workflowInput, nodeOutputs, nodes, currentId, undefined, agent);
+          const items = resolveLoopItems(cfg, ctx);
+          const { body, entries, exits } = collectLoopBody(currentId, nodes, wf.edges);
+          const results: unknown[] = [];
+          if (body.size && entries.length && items.length && !wf.id.endsWith('-loop')) {
+            const sub = subgraphFromBody(wf, body, entries);
+            const baseInput = workflowInput && typeof workflowInput === 'object' && !Array.isArray(workflowInput)
+              ? workflowInput as Record<string, unknown>
+              : { value: workflowInput };
+            for (let index = 0; index < items.length; index++) {
+              if (callbacks.isCancelled()) break;
+              const inner = await executeWorkflow({
+                workflow: sub,
+                agents,
+                runtimeInput: JSON.stringify({ ...baseInput, loopItem: items[index], loopIndex: index }),
+                triggeredBy: opts.triggeredBy,
+                callbacks: {
+                  isCancelled: callbacks.isCancelled,
+                  onNodeStatus: callbacks.onNodeStatus,
+                  onNodeOutput: callbacks.onNodeOutput,
+                  waitForApproval: callbacks.waitForApproval,
+                },
+                invoke,
+                delayMs: 0,
+                runId: `${runId}-loop-${index}`,
+              });
+              for (const exec of inner.nodeExecutions) {
+                if (exec.nodeId.startsWith('__loop_start')) continue;
+                if (exec.output) nodeOutputs[exec.nodeId] = exec.output;
+                if (exec.status === 'failed' && wf.failurePolicy === 'abort') {
+                  status = 'failed';
+                  error = exec.error;
+                }
+              }
+              const lastId = entries[entries.length - 1];
+              const bodyOuts = [...body].map((id) => nodeOutputs[id]).filter(Boolean);
+              const lastOut = bodyOuts[bodyOuts.length - 1] ?? nodeOutputs[lastId];
+              results.push(lastOut ? parseMaybeJson(lastOut) : items[index]);
+              if (status === 'failed') break;
+            }
+            for (const id of body) {
+              visited.add(id);
+              completed.add(id);
+            }
+            loopExitsByNode.set(currentId, exits);
+          }
+          output = JSON.stringify({ loopCount: items.length, items, results, path: cfg.loopPath ?? null }, null, 2);
           break;
         }
-        case 'parallel':
+        case 'parallel': {
+          output = predOut || stringifyOutput(workflowInput);
+          if (!wf.id.includes('-par') && !wf.id.endsWith('-loop')) {
+            const outs = successors(currentId, wf.edges);
+            const exits: WorkflowEdge[] = [];
+            await Promise.all(outs.map(async (edge) => {
+              const target = nodes.get(edge.target);
+              if (!target || target.data.nodeType === 'merge' || target.data.nodeType === 'end') {
+                exits.push(edge);
+                return;
+              }
+              const { body, exits: branchExits } = collectBranch(edge.target, nodes, wf.edges);
+              if (!body.size) {
+                exits.push(...branchExits);
+                return;
+              }
+              const sub = subgraphFromBody(wf, body, [edge.target]);
+              const inner = await executeWorkflow({
+                workflow: { ...sub, id: `${wf.id}-par` },
+                agents,
+                runtimeInput: inputJson,
+                triggeredBy: opts.triggeredBy,
+                callbacks: {
+                  isCancelled: callbacks.isCancelled,
+                  onNodeStatus: callbacks.onNodeStatus,
+                  onNodeOutput: callbacks.onNodeOutput,
+                  waitForApproval: callbacks.waitForApproval,
+                },
+                invoke,
+                delayMs: 0,
+                runId: `${runId}-par-${edge.target}`,
+              });
+              for (const exec of inner.nodeExecutions) {
+                if (exec.nodeId.startsWith('__loop_start')) continue;
+                if (exec.output) nodeOutputs[exec.nodeId] = exec.output;
+                nodeExecutions.push(exec);
+              }
+              for (const id of body) {
+                visited.add(id);
+                completed.add(id);
+              }
+              exits.push(...branchExits);
+            }));
+            loopExitsByNode.set(currentId, exits);
+          }
+          break;
+        }
         case 'merge':
+          output = predOut || stringifyOutput(workflowInput);
+          break;
         case 'input':
         case 'output':
         case 'transform':
         case 'filter':
         case 'map':
-        case 'json-parser':
-          output = predOut || stringifyOutput(workflowInput);
+        case 'json-parser': {
+          const ctx = buildInterpCtx(wf, workflowInput, nodeOutputs, nodes, currentId, undefined, agent);
+          output = stringifyOutput(applyDataNode(node.data.nodeType, predOut, cfg, ctx));
           break;
+        }
         default: {
           if (node.data.kind === 'agent') {
             const retries = Math.max(0, cfg.retryCount ?? agent?.retryCount ?? 0);
@@ -1040,7 +1224,11 @@ export async function executeWorkflow(opts: {
       break;
     }
 
-    if (node.data.nodeType !== 'end') {
+    if (node.data.nodeType === 'loop' || node.data.nodeType === 'parallel') {
+      const exits = loopExitsByNode.get(currentId);
+      if (exits?.length) enqueue(exits);
+      else enqueue(successors(currentId, wf.edges).filter((edge) => !visited.has(edge.target)));
+    } else if (node.data.nodeType !== 'end') {
       enqueue(successors(currentId, wf.edges));
     }
     await persist('running');

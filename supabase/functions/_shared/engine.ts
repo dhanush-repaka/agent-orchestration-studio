@@ -947,21 +947,38 @@ export async function executeWorkflow(opts: {
         case 'loop': {
           const ctx = buildInterpCtx(wf, workflowInput, nodeOutputs, nodes, currentId);
           const fromPath = cfg.loopPath ? getByPath(ctx.previousOutput, cfg.loopPath) : null;
-          const items = Array.isArray(fromPath) ? fromPath : null;
-          const loopCount = items ? items.length : Math.max(1, Math.min(cfg.loopCount ?? 1, 20));
-          output = JSON.stringify({ loopCount, items: items ?? null, path: cfg.loopPath ?? null });
+          const items = Array.isArray(fromPath) ? fromPath.slice(0, 20) : Array.isArray(ctx.previousOutput)
+            ? ctx.previousOutput.slice(0, 20)
+            : Array.from({ length: Math.max(0, Math.min(cfg.loopCount ?? 0, 20)) }, (_, i) => i);
+          output = JSON.stringify({ loopCount: items.length, items, path: cfg.loopPath ?? null });
           break;
         }
         case 'parallel':
         case 'merge':
+          output = predOut || stringifyOutput(workflowInput);
+          break;
         case 'input':
+          output = stringifyOutput(workflowInput);
+          break;
         case 'output':
         case 'transform':
         case 'filter':
         case 'map':
-        case 'json-parser':
-          output = predOut || stringifyOutput(workflowInput);
+        case 'json-parser': {
+          const ctx = buildInterpCtx(wf, workflowInput, nodeOutputs, nodes, currentId);
+          const source = predOut ? parseMaybeJson(predOut) : ctx.previousOutput;
+          if (node.data.nodeType === 'filter' && Array.isArray(source)) {
+            output = stringifyOutput(source.filter((item) => evaluateCondition(cfg.expression || 'true', { ...ctx, previousOutput: item })));
+          } else if ((node.data.nodeType === 'transform' || node.data.nodeType === 'output' || node.data.nodeType === 'map') && (cfg.expression || cfg.outputMapping)) {
+            const rendered = interpolate(cfg.expression || cfg.outputMapping || '', { ...ctx, previousOutput: source });
+            output = stringifyOutput(parseJson(rendered, rendered));
+          } else if (node.data.nodeType === 'json-parser') {
+            output = stringifyOutput(typeof source === 'string' ? parseJson(source, source) : source);
+          } else {
+            output = stringifyOutput(source);
+          }
           break;
+        }
         default: {
           if (node.data.kind === 'agent') {
             const retries = Math.max(0, cfg.retryCount ?? agent?.retryCount ?? 0);

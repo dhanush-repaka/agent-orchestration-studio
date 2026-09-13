@@ -97,6 +97,10 @@ export function evaluateCondition(expression: string, ctx: InterpContext): boole
       default: return a === b;
     }
   }
+  const textCmp = interpolated.match(/^\s*(.*?)\s*(==|!=)\s*(.*?)\s*$/);
+  if (textCmp) {
+    return textCmp[2] === '==' ? textCmp[1] === textCmp[3] : textCmp[1] !== textCmp[3];
+  }
   const lower = interpolated.toLowerCase();
   if (['true', 'yes', '1'].includes(lower)) return true;
   if (['false', 'no', '0', 'null', 'undefined', ''].includes(lower)) return false;

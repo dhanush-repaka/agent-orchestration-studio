@@ -3,12 +3,12 @@ import { useStore, type Page } from '@/store';
 import { Icon } from '@/components/Icon';
 import { StatusBadge } from '@/components/StatusBadge';
 import {
-  LayoutDashboard, Bot, Workflow, PlayCircle, Plug, MessageSquareText,
+  LayoutDashboard, Bot, Workflow, PlayCircle, UserCheck, Plug, MessageSquareText,
   BookOpen, Cpu, KeyRound, ClipboardCheck, Activity, ScrollText, Settings,
   PanelLeftClose, PanelLeftOpen, Search, Bell, HelpCircle, Sun, Moon,
   ChevronDown, Sparkles, Menu, LogOut,
 } from 'lucide-react';
-import type { Environment } from '@/types';
+import { allowedEnvironmentIds, envClass, inCurrentEnvironment } from '@/lib/environments';
 
 const NAV_GROUPS: { title: string; items: { id: Page; label: string; icon: typeof LayoutDashboard }[] }[] = [
   {
@@ -16,13 +16,14 @@ const NAV_GROUPS: { title: string; items: { id: Page; label: string; icon: typeo
     items: [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { id: 'agents', label: 'Agent Library', icon: Bot },
-      { id: 'workflow-builder', label: 'Workflow Builder', icon: Workflow },
+      { id: 'workflows', label: 'Workflows', icon: Workflow },
     ],
   },
   {
     title: 'Operate',
     items: [
       { id: 'workflow-runs', label: 'Workflow Runs', icon: PlayCircle },
+      { id: 'approvals', label: 'Approvals', icon: UserCheck },
       { id: 'monitoring', label: 'Monitoring', icon: Activity },
     ],
   },
@@ -46,15 +47,6 @@ const NAV_GROUPS: { title: string; items: { id: Page; label: string; icon: typeo
   },
 ];
 
-const ENVIRONMENTS: Environment[] = ['development', 'qa', 'uat', 'production'];
-
-const ENV_COLORS: Record<Environment, string> = {
-  development: 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300',
-  qa: 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300',
-  uat: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
-  production: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
-};
-
 export function Layout({ children }: { children: React.ReactNode }) {
   const page = useStore((s) => s.page);
   const setPage = useStore((s) => s.setPage);
@@ -64,6 +56,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const toggleTheme = useStore((s) => s.toggleTheme);
   const environment = useStore((s) => s.environment);
   const setEnvironment = useStore((s) => s.setEnvironment);
+  const environments = useStore((s) => s.environments);
   const workspaceName = useStore((s) => s.workspaceName);
   const currentUser = useStore((s) => s.currentUser);
   const signOut = useStore((s) => s.signOut);
@@ -72,10 +65,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const workflows = useStore((s) => s.workflows);
   const setSelectedAgent = useStore((s) => s.setSelectedAgent);
   const setSelectedWorkflow = useStore((s) => s.setSelectedWorkflow);
+  const setSelectedRun = useStore((s) => s.setSelectedRun);
   const [headerMenu, setHeaderMenu] = useState<'notifications' | 'help' | null>(null);
   const [search, setSearch] = useState('');
 
-  const recentNotes = runs.slice(0, 5).map((r) => ({
+  const visibleEnvs = allowedEnvironmentIds(currentUser, environments);
+  const currentEnvDef = environments.find((e) => e.id === environment);
+  const envRuns = runs.filter((r) => inCurrentEnvironment(r.environment, environment));
+  const waitingRuns = runs.filter((r) => r.status === 'waiting-approval');
+  const waitingAll = waitingRuns.length;
+  const recentNotes = envRuns.slice(0, 5).map((r) => ({
     id: r.id,
     title: `${r.workflowName} ${r.status}`,
     detail: r.startTime?.slice(0, 16) ?? r.id,
@@ -83,10 +82,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const searchQ = search.trim().toLowerCase();
   const agentHits = searchQ
-    ? agents.filter((a) => a.persisted !== false && (a.displayName.toLowerCase().includes(searchQ) || a.type.toLowerCase().includes(searchQ))).slice(0, 6)
+    ? agents.filter((a) => a.persisted !== false && inCurrentEnvironment(a.environment, environment) && (a.displayName.toLowerCase().includes(searchQ) || a.type.toLowerCase().includes(searchQ))).slice(0, 6)
     : [];
   const workflowHits = searchQ
-    ? workflows.filter((w) => w.name.toLowerCase().includes(searchQ) || w.description.toLowerCase().includes(searchQ)).slice(0, 6)
+    ? workflows.filter((w) => inCurrentEnvironment(w.environment, environment) && (w.name.toLowerCase().includes(searchQ) || w.description.toLowerCase().includes(searchQ))).slice(0, 6)
     : [];
 
   return (
@@ -123,13 +122,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {/* Environment selector */}
         <div className="relative ml-auto lg:ml-2">
           <select
-            value={environment}
-            onChange={(e) => setEnvironment(e.target.value as Environment)}
-            aria-label="Environment"
-            className={`appearance-none pl-3 pr-8 py-1.5 rounded-lg text-xs font-semibold border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 ${ENV_COLORS[environment]}`}
+            value={visibleEnvs.includes(environment) ? environment : (visibleEnvs[0] ?? '')}
+            onChange={(e) => setEnvironment(e.target.value)}
+            aria-label="Working environment"
+            title="Lists, new items, and runs stay in this environment"
+            className={`appearance-none pl-3 pr-8 py-1.5 rounded-lg text-xs font-semibold border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 ${envClass(currentEnvDef)}`}
           >
-            {ENVIRONMENTS.map((e) => (
-              <option key={e} value={e} className="capitalize bg-white dark:bg-slate-900 text-slate-900">{e}</option>
+            {environments.filter((e) => visibleEnvs.includes(e.id)).map((e) => (
+              <option key={e.id} value={e.id} className="bg-white dark:bg-slate-900 text-slate-900">{e.name}</option>
             ))}
           </select>
           <ChevronDown className="w-3.5 h-3.5 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none opacity-60" />
@@ -187,7 +187,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             onClick={() => setHeaderMenu((m) => (m === 'notifications' ? null : 'notifications'))}
           >
             <Bell className="w-5 h-5" />
-            {runs.some((r) => r.status === 'running' || r.status === 'waiting-approval' || r.status === 'paused') && (
+            {(waitingAll > 0 || envRuns.some((r) => r.status === 'running' || r.status === 'paused')) && (
               <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />
             )}
           </button>
@@ -202,14 +202,29 @@ export function Layout({ children }: { children: React.ReactNode }) {
           {headerMenu === 'notifications' && (
             <div className="absolute right-16 top-11 w-80 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-50 p-3">
               <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">Notifications</p>
-              {recentNotes.length === 0 ? (
+              {waitingAll > 0 && (
+                <button
+                  type="button"
+                  className="w-full text-left mb-2 px-2 py-2 rounded-lg bg-purple-50 dark:bg-purple-950 text-xs text-purple-800 dark:text-purple-200"
+                  onClick={() => { setPage('approvals'); setHeaderMenu(null); }}
+                >
+                  {waitingAll} run{waitingAll === 1 ? '' : 's'} waiting for approval
+                </button>
+              )}
+              {recentNotes.length === 0 && waitingAll === 0 ? (
                 <p className="text-xs text-slate-500">No recent run activity.</p>
               ) : (
                 <ul className="space-y-2">
                   {recentNotes.map((n) => (
-                    <li key={n.id} className="text-xs text-slate-600 dark:text-slate-300">
-                      <span className="font-medium text-slate-800 dark:text-slate-100">{n.title}</span>
-                      <span className="block text-[11px] text-slate-400">{n.detail}</span>
+                    <li key={n.id}>
+                      <button
+                        type="button"
+                        className="w-full text-left text-xs text-slate-600 dark:text-slate-300"
+                        onClick={() => { setSelectedRun(n.id); setPage('run-details'); setHeaderMenu(null); }}
+                      >
+                        <span className="font-medium text-slate-800 dark:text-slate-100">{n.title}</span>
+                        <span className="block text-[11px] text-slate-400">{n.detail}</span>
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -220,15 +235,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <div className="absolute right-8 top-11 w-80 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-50 p-3">
               <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">Help</p>
               <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-1.5">
-                <li>Build agents in Agent Library, then drop them on the Workflow Builder canvas.</li>
+                <li>Build agents in Agent Library, then open Workflows to manage or edit a canvas.</li>
                 <li>Connect Start → agents → End, then click Run Workflow.</li>
                 <li>Keyboard: Ctrl+S saves the open workflow. Ctrl+Z undoes canvas edits.</li>
                 <li>
                   <button
                     className="text-brand-600 dark:text-brand-400 hover:underline"
-                    onClick={() => { setPage('workflow-builder'); setHeaderMenu(null); }}
+                    onClick={() => { setPage('workflows'); setHeaderMenu(null); }}
                   >
-                    Open Workflow Builder
+                    Open Workflows
                   </button>
                 </li>
               </ul>
@@ -243,7 +258,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </div>
             <div className="hidden lg:block">
               <p className="text-xs font-semibold text-slate-900 dark:text-white leading-tight">{currentUser.name}</p>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{currentUser.email || currentUser.role}</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{currentUser.role}</p>
             </div>
             <button
               onClick={() => { void signOut(); }}
@@ -269,7 +284,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 )}
                 <div className="space-y-0.5">
                   {group.items.map((item) => {
-                    const active = page === item.id || (item.id === 'agents' && page === 'agent-config') || (item.id === 'workflow-runs' && page === 'run-details');
+                    const active = page === item.id
+                      || (item.id === 'agents' && page === 'agent-config')
+                      || (item.id === 'workflows' && page === 'workflow-builder')
+                      || (item.id === 'workflow-runs' && (page === 'run-details' || page === 'run-compare'));
                     return (
                       <button
                         key={item.id}
@@ -280,7 +298,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
                         aria-current={active ? 'page' : undefined}
                       >
                         <item.icon className="w-[18px] h-[18px] shrink-0" />
-                        {!collapsed && <span className="truncate">{item.label}</span>}
+                        {!collapsed && <span className="truncate flex-1 text-left">{item.label}</span>}
+                        {!collapsed && item.id === 'approvals' && waitingAll > 0 && (
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300">{waitingAll}</span>
+                        )}
                       </button>
                     );
                   })}
