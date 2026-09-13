@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '@/store';
 import { formatRunOutput } from '@/lib/output';
+import { PlaywrightReportButton } from '@/components/PlaywrightReportButton';
 import { StatusBadge } from '@/components/StatusBadge';
 import {
   CheckCircle2, ChevronDown, ChevronUp, UserCheck, X, XCircle,
@@ -148,6 +149,7 @@ export function RunLivePanel({
                 {activeError && (
                   <p className="text-xs text-red-600 dark:text-red-400">{activeError}</p>
                 )}
+                <PlaywrightReportButton output={activeOutput} className="btn-secondary text-xs" />
                 <pre className="nowheel nodrag max-h-40 overflow-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-[11px] leading-relaxed font-mono text-slate-700 dark:text-slate-200 whitespace-pre-wrap break-words">
                   {formatRunOutput(activeOutput) || (isRunning ? 'Waiting for this node to finish…' : 'No output')}
                 </pre>

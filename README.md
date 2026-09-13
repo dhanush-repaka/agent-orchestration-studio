@@ -176,6 +176,7 @@ Local (`npm run dev`):
 - Writes `playwright.config.mjs` + `generated.spec.mjs` under `.aos-runs/`
 - Runs Chromium with `cwd` set to that folder (avoids the `playwright.config.ts` dynamic-import crash)
 - Per-test timeout 15s, retries 0
+- Failure screenshots and Playwright traces (`retain-on-failure`). The official HTML report is kept at `.aos-runs/pw-*/playwright-report/` and opened from Run Details
 - Unsets `FORCE_COLOR` and sets `NO_COLOR` so ANSI warnings are not treated as the failure
 
 Hosted (`qefoundry.com`):

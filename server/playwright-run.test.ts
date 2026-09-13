@@ -11,6 +11,9 @@ describe('playwright runner files', () => {
     expect(source).toContain('export default');
     expect(source).not.toContain('defineConfig');
     expect(source).not.toContain('from \'@playwright/test\'');
+    expect(source).toContain("screenshot: 'only-on-failure'");
+    expect(source).toContain("trace: 'retain-on-failure'");
+    expect(source).toContain('playwright-report');
     const dir = mkdtempSync(join(tmpdir(), 'aos-pw-'));
     const file = join(dir, 'playwright.config.mjs');
     try {

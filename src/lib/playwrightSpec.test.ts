@@ -19,6 +19,7 @@ import {
   findLatestPlaywrightExecute,
   flattenPlaywrightJsonReport,
   looksLikePlaywrightSpec,
+  playwrightReportFromOutput,
   resolveAppUrl,
   resolvePlaywrightBaseUrl,
   rewriteSpecUrls,
@@ -217,6 +218,16 @@ test("Open about", async ({ page }) => { await page.goto("/about"); });`;
     expect(resolvePlaywrightBaseUrl({}, {})).toBe(DEFAULT_PLAYWRIGHT_BASE_URL);
   });
 
+  it('reads a report URL from execute output', () => {
+    expect(playwrightReportFromOutput(JSON.stringify({
+      htmlReport: '<!DOCTYPE html><html><body>ok</body></html>',
+      reportUrl: '/__studio/playwright-artifacts/pw-1/playwright-report/index.html',
+    }))).toEqual({
+      html: '<!DOCTYPE html><html><body>ok</body></html>',
+      reportUrl: '/__studio/playwright-artifacts/pw-1/playwright-report/index.html',
+    });
+  });
+
   it('flattens a Playwright JSON report', () => {
     const summary = flattenPlaywrightJsonReport({
       suites: [{
@@ -252,5 +263,25 @@ test("Open about", async ({ page }) => { await page.goto("/about"); });`;
     expect(html).toContain('<!DOCTYPE html>');
     expect(html).toContain('registers a new customer');
     expect(html).toContain('passed');
+  });
+
+  it('embeds failure screenshots and a Playwright report link', () => {
+    const html = buildPlaywrightHtmlReport({
+      passed: false,
+      total: 1,
+      failed: 1,
+      results: [{
+        title: 'missing button',
+        status: 'failed',
+        error: 'Timeout',
+        screenshot: 'data:image/png;base64,abcd',
+        traceUrl: '/__studio/playwright-artifacts/pw-1/test-results/trace.zip',
+      }],
+      reportUrl: '/__studio/playwright-artifacts/pw-1/playwright-report/index.html',
+      source: 'playwright',
+    });
+    expect(html).toContain('data:image/png;base64,abcd');
+    expect(html).toContain('Download trace');
+    expect(html).toContain('Open the Playwright HTML report');
   });
 });

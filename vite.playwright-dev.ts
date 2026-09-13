@@ -1,4 +1,6 @@
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { extname, resolve } from 'node:path';
 import type { Plugin } from 'vite';
 import { discoverLocators, executeSpec } from './server/playwright-run';
 
@@ -27,7 +29,11 @@ export function playwrightDevRunner(): Plugin {
     name: 'playwright-dev-runner',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
-        const path = req.url?.split('?')[0];
+        const path = req.url?.split('?')[0] ?? '';
+        if (req.method === 'GET' && path.startsWith('/__studio/playwright-artifacts/')) {
+          servePlaywrightArtifact(path, res);
+          return;
+        }
         if (req.method !== 'POST' || (path !== '/__studio/playwright-execute' && path !== '/__studio/playwright-locators')) {
           next();
           return;
@@ -49,4 +55,41 @@ export function playwrightDevRunner(): Plugin {
       });
     },
   };
+}
+
+const ARTIFACT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.zip': 'application/zip',
+  '.json': 'application/json',
+  '.webm': 'video/webm',
+};
+
+function servePlaywrightArtifact(urlPath: string, res: ServerResponse) {
+  const match = urlPath.match(/^\/__studio\/playwright-artifacts\/(pw-[A-Za-z0-9-]+)\/(.+)$/);
+  if (!match) {
+    res.statusCode = 404;
+    res.end('Not found');
+    return;
+  }
+  const rel = decodeURIComponent(match[2]);
+  if (rel.includes('..')) {
+    res.statusCode = 403;
+    res.end('Forbidden');
+    return;
+  }
+  const root = resolve(process.cwd(), '.aos-runs', match[1]);
+  const file = resolve(root, rel);
+  if (!file.startsWith(root) || !existsSync(file) || !statSync(file).isFile()) {
+    res.statusCode = 404;
+    res.end('Not found');
+    return;
+  }
+  res.statusCode = 200;
+  res.setHeader('Content-Type', ARTIFACT_TYPES[extname(file).toLowerCase()] || 'application/octet-stream');
+  createReadStream(file).pipe(res);
 }

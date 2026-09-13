@@ -7,6 +7,7 @@ import {
   BookOpen, Quote,
 } from 'lucide-react';
 import { downloadText } from '@/lib/download';
+import { findPlaywrightReportOutput, PlaywrightReportButton } from '@/components/PlaywrightReportButton';
 import type { NodeExecution } from '@/types';
 
 export function RunDetailsPage() {
@@ -68,6 +69,7 @@ export function RunDetailsPage() {
           >
             <Play className="w-4 h-4" /> Re-run
           </button>
+          <PlaywrightReportButton output={findPlaywrightReportOutput(run.nodeExecutions)} />
           <button onClick={handleDownloadLogs} className="btn-secondary"><Download className="w-4 h-4" /> Logs</button>
         </div>
       </div>
@@ -175,7 +177,8 @@ function NodeExecRow({
       </button>
       {expanded && (
         <div className="px-4 pb-4 pl-12 grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <div className="lg:col-span-2 flex justify-end">
+          <div className="lg:col-span-2 flex justify-end gap-2">
+            <PlaywrightReportButton output={ne.output} />
             <button
               type="button"
               onClick={onReplay}

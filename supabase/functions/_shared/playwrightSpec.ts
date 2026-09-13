@@ -707,10 +707,19 @@ export function findLatestPlaywrightExecute(nodeOutputs: Record<string, string>)
   return null;
 }
 
+export type PlaywrightSpecAttachment = {
+  name: string;
+  contentType?: string;
+  path?: string;
+};
+
 export type PlaywrightSpecResult = {
   title: string;
   status: 'passed' | 'failed' | 'skipped' | 'timedOut';
   error?: string;
+  screenshot?: string;
+  traceUrl?: string;
+  attachments?: PlaywrightSpecAttachment[];
 };
 
 export function flattenPlaywrightJsonReport(report: unknown): {
@@ -739,10 +748,18 @@ export function flattenPlaywrightJsonReport(report: unknown): {
       const error = lastResult?.error && typeof lastResult.error === 'object'
         ? String((lastResult.error as { message?: string }).message ?? '')
         : undefined;
+      const attachments = Array.isArray(lastResult?.attachments)
+        ? (lastResult.attachments as Record<string, unknown>[]).map((att) => ({
+          name: String(att.name ?? 'attachment'),
+          contentType: typeof att.contentType === 'string' ? att.contentType : undefined,
+          path: typeof att.path === 'string' ? att.path : undefined,
+        }))
+        : [];
       results.push({
         title: String(specRec.title ?? 'generated test'),
         status,
         ...(error ? { error } : {}),
+        ...(attachments.length ? { attachments } : {}),
       });
     }
   };
@@ -765,11 +782,20 @@ export function flattenPlaywrightJsonReport(report: unknown): {
 
 export function buildPlaywrightHtmlReport(result: Record<string, unknown> | null | undefined): string {
   const rec = result ?? {};
-  const rows = Array.isArray(rec.results) ? rec.results as { title?: string; status?: string; error?: string }[] : [];
+  const rows = Array.isArray(rec.results)
+    ? rec.results as { title?: string; status?: string; error?: string; screenshot?: string; traceUrl?: string }[]
+    : [];
+  const reportUrl = typeof rec.reportUrl === 'string' ? rec.reportUrl : '';
   const rowHtml = rows.map((row) => {
     const status = String(row.status ?? 'unknown');
     const color = status === 'passed' ? '#15803d' : status === 'skipped' ? '#a16207' : '#b91c1c';
-    return `<tr><td>${escapeHtml(String(row.title ?? 'test'))}</td><td style="color:${color};font-weight:600">${escapeHtml(status)}</td><td>${escapeHtml(row.error ?? '')}</td></tr>`;
+    const shot = row.screenshot?.startsWith('data:image')
+      ? `<img src="${row.screenshot}" alt="Failure screenshot" style="max-width:420px;border:1px solid #e2e8f0;border-radius:8px;margin-top:8px" />`
+      : '';
+    const trace = row.traceUrl
+      ? `<p><a href="${escapeHtml(row.traceUrl)}">Download trace</a> · open with <code>npx playwright show-trace</code></p>`
+      : '';
+    return `<tr><td>${escapeHtml(String(row.title ?? 'test'))}${shot}${trace}</td><td style="color:${color};font-weight:600">${escapeHtml(status)}</td><td>${escapeHtml(row.error ?? '')}</td></tr>`;
   }).join('');
   return `<!DOCTYPE html>
 <html lang="en">
@@ -792,6 +818,7 @@ export function buildPlaywrightHtmlReport(result: Record<string, unknown> | null
      · ${Number(rec.failed ?? 0)} failed
      · source ${escapeHtml(String(rec.source ?? 'playwright'))}</p>
   <p>Base URL: ${escapeHtml(String(rec.baseUrl ?? ''))}</p>
+  ${reportUrl ? `<p><a href="${escapeHtml(reportUrl)}">Open the Playwright HTML report</a> (includes traces and screenshots)</p>` : ''}
   <table>
     <thead><tr><th>Test</th><th>Status</th><th>Error</th></tr></thead>
     <tbody>${rowHtml || '<tr><td colspan="3">No test rows</td></tr>'}</tbody>

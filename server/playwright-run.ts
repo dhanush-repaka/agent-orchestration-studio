@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, extname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   DEFAULT_PLAYWRIGHT_BASE_URL,
@@ -12,6 +12,7 @@ import {
   normalizeGotoPath,
   rewriteSpecUrls,
   summarizePlaywrightOutput,
+  type PlaywrightSpecResult,
 } from '../src/lib/playwrightSpec';
 
 export type RunnerResult = { status: number; body: Record<string, unknown> };
@@ -81,13 +82,17 @@ export function buildPlaywrightRunnerConfig(baseUrl: string, chrome: ChromeLaunc
   retries: 0,
   workers: 1,
   fullyParallel: false,
-  reporter: [['json', { outputFile: 'results.json' }], ['list']],
+  reporter: [
+    ['json', { outputFile: 'results.json' }],
+    ['list'],
+    ${lambda ? '' : `['html', { outputFolder: 'playwright-report', open: 'never' }],`}
+  ].filter(Boolean),
   use: {
     baseURL: ${JSON.stringify(baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`)},
     headless: true,
-    screenshot: 'off',
+    screenshot: 'only-on-failure',
     video: 'off',
-    trace: 'off',
+    trace: ${lambda ? "'off'" : "'retain-on-failure'"},
     launchOptions: {
       executablePath: ${chrome.executablePath ? JSON.stringify(chrome.executablePath) : 'undefined'},
       args: ${JSON.stringify(chrome.args)},
@@ -96,6 +101,66 @@ export function buildPlaywrightRunnerConfig(baseUrl: string, chrome: ChromeLaunc
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
 };
 `;
+}
+
+function pruneOldRuns(root: string, keep = 8) {
+  if (!existsSync(root)) return;
+  const dirs = readdirSync(root)
+    .filter((name) => name.startsWith('pw-'))
+    .map((name) => {
+      const path = join(root, name);
+      try {
+        return { path, mtime: statSync(path).mtimeMs };
+      } catch {
+        return null;
+      }
+    })
+    .filter((row): row is { path: string; mtime: number } => Boolean(row))
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const stale of dirs.slice(keep)) {
+    rmSync(stale.path, { recursive: true, force: true });
+  }
+}
+
+function walkFiles(dir: string, acc: string[] = []): string[] {
+  if (!existsSync(dir)) return acc;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) walkFiles(path, acc);
+    else acc.push(path);
+  }
+  return acc;
+}
+
+function hydrateRunArtifacts(dir: string, results: PlaywrightSpecResult[]): PlaywrightSpecResult[] {
+  const artifactId = basename(dir);
+  return results.map((row) => {
+    const next = { ...row };
+    const attachments = row.attachments ?? [];
+    for (const att of attachments) {
+      if (!att.path || !existsSync(att.path)) continue;
+      if (!next.screenshot && (att.name === 'screenshot' || att.contentType?.startsWith('image/'))) {
+        next.screenshot = `data:${att.contentType || 'image/png'};base64,${readFileSync(att.path).toString('base64')}`;
+      }
+      if (!next.traceUrl && (att.name === 'trace' || att.path.endsWith('.zip'))) {
+        next.traceUrl = `/__studio/playwright-artifacts/${artifactId}/${relative(dir, att.path).replace(/\\/g, '/')}`;
+      }
+    }
+    if (!next.screenshot || !next.traceUrl) {
+      const slug = row.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      for (const file of walkFiles(join(dir, 'test-results'))) {
+        const name = file.toLowerCase();
+        if (!name.includes(slug.slice(0, 24)) && !name.includes('test-failed')) continue;
+        if (!next.screenshot && extname(file) === '.png') {
+          next.screenshot = `data:image/png;base64,${readFileSync(file).toString('base64')}`;
+        }
+        if (!next.traceUrl && name.endsWith('trace.zip')) {
+          next.traceUrl = `/__studio/playwright-artifacts/${artifactId}/${relative(dir, file).replace(/\\/g, '/')}`;
+        }
+      }
+    }
+    return next;
+  });
 }
 
 function writeRunnerFiles(dir: string, spec: string, baseUrl: string, timeoutSec: number, chrome: ChromeLaunch) {
@@ -231,7 +296,7 @@ async function executeSpecInProcess(
       baseURL: baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`,
     });
     const deadline = started + Math.min(timeoutSec, 20) * 1000;
-    const results: Array<{ title: string; status: 'passed' | 'failed' | 'skipped'; error?: string }> = [];
+    const results: Array<{ title: string; status: 'passed' | 'failed' | 'skipped'; error?: string; screenshot?: string }> = [];
     for (const test of tests) {
       if (Date.now() > deadline - 2500) {
         results.push({ title: test.title, status: 'skipped' });
@@ -243,10 +308,18 @@ async function executeSpecInProcess(
         await test.fn({ page });
         results.push({ title: test.title, status: 'passed' });
       } catch (err) {
+        let screenshot: string | undefined;
+        try {
+          const shot = await page.screenshot({ type: 'png' });
+          screenshot = `data:image/png;base64,${Buffer.from(shot).toString('base64')}`;
+        } catch {
+          // keep the assertion error
+        }
         results.push({
           title: test.title,
           status: 'failed',
           error: err instanceof Error ? err.message : String(err),
+          ...(screenshot ? { screenshot } : {}),
         });
       } finally {
         await page.close().catch(() => undefined);
@@ -344,9 +417,16 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
       }
     }
     const summary = summarizePlaywrightOutput(report, ran.stdout, ran.stderr);
+    const results = hydrateRunArtifacts(dir, summary.results);
+    const artifactId = basename(dir);
+    const reportPath = join(dir, 'playwright-report', 'index.html');
+    const reportUrl = existsSync(reportPath)
+      ? `/__studio/playwright-artifacts/${artifactId}/playwright-report/index.html`
+      : undefined;
     const missingBrowser = /Executable doesn't exist|browserType\.launch/i.test(`${ran.stdout}\n${ran.stderr}`);
     const body = {
       ...summary,
+      results,
       source: missingBrowser ? 'unavailable' : 'playwright',
       error: missingBrowser
         ? 'Playwright Chromium is not installed on the host.'
@@ -356,13 +436,30 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
       durationMs: Date.now() - started,
       baseUrl,
       spec,
+      artifactDir: artifactId,
+      ...(reportUrl ? { reportUrl } : {}),
     };
+    pruneOldRuns(root);
     return {
       status: missingBrowser ? 500 : 200,
       body: { ...body, htmlReport: buildPlaywrightHtmlReport(body) },
     };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    return {
+      status: 500,
+      body: {
+        passed: false,
+        total: 0,
+        failed: 0,
+        results: [],
+        source: 'unavailable',
+        error: err instanceof Error ? err.message : 'Playwright runner failed',
+        durationMs: Date.now() - started,
+        baseUrl,
+        spec,
+        artifactDir: basename(dir),
+      },
+    };
   }
 }
 
