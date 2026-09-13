@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { User } from '@/types';
 import {
-  asRole, isAuthUserId, mergeUserRoster, parseUserRoster, pickSignedInUser,
+  applyPinnedRole, asRole, isAuthUserId, mergeUserRoster, parseUserRoster, pickSignedInUser,
   preferUserRecord, readLocalUserRoster, rememberExactUser, signedInFromAuth,
   userFromRoleRow, writeLocalUserRoster,
 } from '@/lib/users';
@@ -96,6 +96,22 @@ describe('user roles', () => {
   it('does not let a Viewer hydrate overwrite a restored administrator', () => {
     expect(pickSignedInUser(admin, viewer).role).toBe('Administrator');
     expect(preferUserRecord(viewer, admin).role).toBe('Administrator');
+  });
+
+  it('pins the founder email as Administrator even when the table says Viewer', () => {
+    const founder: User = {
+      id: '33333333-3333-4333-8333-333333333333',
+      name: 'Studio user',
+      email: 'dhanush@qefoundry.com',
+      role: 'Viewer',
+    };
+    expect(applyPinnedRole(founder)).toMatchObject({
+      name: 'Dhanush Repaka',
+      role: 'Administrator',
+    });
+    expect(signedInFromAuth(founder, founder).role).toBe('Administrator');
+    expect(mergeUserRoster([founder], [], founder)[0]?.role).toBe('Administrator');
+    expect(pickSignedInUser(applyPinnedRole(founder), founder).role).toBe('Administrator');
   });
 
   describe('local roster cache', () => {

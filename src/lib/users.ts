@@ -8,6 +8,20 @@ const ROLES: Role[] = [
 
 const ROSTER_KEY = 'aos-user-roles';
 const AUTH_USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PINNED_ADMIN_EMAILS = ['dhanush@qefoundry.com'];
+
+export function isPinnedAdministrator(email: string | undefined): boolean {
+  return Boolean(email && PINNED_ADMIN_EMAILS.includes(email.trim().toLowerCase()));
+}
+
+export function applyPinnedRole(user: User): User {
+  if (!isPinnedAdministrator(user.email)) return user;
+  return {
+    ...user,
+    name: user.name.trim() && user.name !== 'Studio user' ? user.name : 'Dhanush Repaka',
+    role: 'Administrator',
+  };
+}
 
 export function asRole(value: unknown, fallback: Role = 'Viewer'): Role {
   if (typeof value === 'string') {
@@ -46,13 +60,13 @@ export function roleRank(role: Role | undefined): number {
 
 export function preferUserRecord(a: User, b: User): User {
   const role = roleRank(a.role) >= roleRank(b.role) ? a.role : b.role;
-  return {
+  return applyPinnedRole({
     id: a.id || b.id,
     name: (b.name && b.name !== 'Studio user' ? b.name : a.name) || b.name,
     email: b.email || a.email,
     role,
     allowedEnvironments: b.allowedEnvironments ?? a.allowedEnvironments,
-  };
+  });
 }
 
 export function parseUserRoster(raw: unknown): User[] {
@@ -97,13 +111,14 @@ export function writeLocalUserRoster(users: User[]): void {
 
 export function rememberExactUser(user: User): void {
   if (!isAuthUserId(user.id)) return;
+  const next = applyPinnedRole(user);
   persistRoster([
-    ...readLocalUserRoster().filter((row) => row.id !== user.id),
+    ...readLocalUserRoster().filter((row) => row.id !== next.id),
     {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
+      id: next.id,
+      name: next.name,
+      email: next.email,
+      role: next.role,
     },
   ]);
 }
@@ -118,7 +133,7 @@ export function mergeUserRoster(remote: User[] | null, local: User[], current?: 
   const add = (user: User | undefined) => {
     if (!user?.id || !isAuthUserId(user.id)) return;
     const prev = byId.get(user.id);
-    byId.set(user.id, prev ? preferUserRecord(prev, user) : user);
+    byId.set(user.id, applyPinnedRole(prev ? preferUserRecord(prev, user) : user));
   };
   for (const user of remote ?? []) add(user);
   for (const user of local) add(user);
@@ -135,22 +150,22 @@ export function signedInFromAuth(authStub: User, current: User, remembered?: Use
     : (currentRole && currentRole !== 'Viewer'
       ? currentRole
       : (rememberedRole && rememberedRole !== 'Viewer' ? rememberedRole : 'Viewer'));
-  return {
+  return applyPinnedRole({
     ...authStub,
     role,
     allowedEnvironments: same ? current.allowedEnvironments : remembered?.allowedEnvironments,
-  };
+  });
 }
 
 export function pickSignedInUser(promoted: User, fromRoster?: User): User {
   if (!fromRoster || fromRoster.id !== promoted.id) return promoted;
-  return {
+  return applyPinnedRole({
     ...fromRoster,
     name: promoted.name || fromRoster.name,
     email: promoted.email || fromRoster.email,
     role: roleRank(promoted.role) >= roleRank(fromRoster.role) ? promoted.role : fromRoster.role,
     allowedEnvironments: fromRoster.allowedEnvironments ?? promoted.allowedEnvironments,
-  };
+  });
 }
 
 export type UserRolesLoad = { ok: boolean; users: User[] };
@@ -192,10 +207,18 @@ export async function ensureAdministratorExists(user: User): Promise<User> {
   const local = readLocalUserRoster();
   const rows = loaded.ok ? loaded.users : local;
   const mine = rows.find((row) => row.id === user.id);
+  const candidate = applyPinnedRole(mine ?? user);
+  if (candidate.role === 'Administrator') {
+    if (mine?.role !== 'Administrator') {
+      await upsertUserRole(candidate);
+      rememberUsers([candidate, ...rows]);
+    }
+    return candidate;
+  }
   if (rows.some((row) => row.role === 'Administrator')) {
     return mine ?? user;
   }
-  const next: User = { ...(mine ?? user), role: 'Administrator' };
+  const next: User = { ...candidate, role: 'Administrator' };
   await upsertUserRole(next);
   rememberUsers([next, ...rows]);
   return next;
@@ -236,6 +259,7 @@ export async function ensureUserRow(user: User): Promise<User> {
   };
 
   const preservedRole = (): Role => {
+    if (isPinnedAdministrator(user.email) || isPinnedAdministrator(remembered?.email)) return 'Administrator';
     if (user.role === 'Administrator' || remembered?.role === 'Administrator') return 'Administrator';
     if (user.role && user.role !== 'Viewer') return user.role;
     return remembered?.role ?? 'Viewer';
@@ -244,19 +268,20 @@ export async function ensureUserRow(user: User): Promise<User> {
   try {
     const existing = await readRow();
     if (existing.failed) {
-      return { ...user, role: preservedRole(), name: user.name || remembered?.name || user.name, email: user.email || remembered?.email || user.email };
+      return applyPinnedRole({ ...user, role: preservedRole(), name: user.name || remembered?.name || user.name, email: user.email || remembered?.email || user.email });
     }
     if (existing.user) {
       const name = user.name.trim() || existing.user.name;
       const email = user.email.trim() || existing.user.email;
-      if (name !== existing.user.name || email !== existing.user.email) {
+      const next = applyPinnedRole({ ...existing.user, name, email });
+      if (name !== existing.user.name || email !== existing.user.email || next.role !== existing.user.role) {
         await supabase.from('user_roles').update({
-          name,
-          email,
+          name: next.name,
+          email: next.email,
+          role: next.role,
           updated_at: new Date().toISOString(),
         }).eq('id', user.id);
       }
-      const next = { ...existing.user, name, email };
       rememberUsers([next]);
       return next;
     }
@@ -265,12 +290,12 @@ export async function ensureUserRow(user: User): Promise<User> {
       if (!isMissingRelation(countError) && !isTransientNetworkError(countError)) {
         logStoreError('Failed to count users', countError);
       }
-      return { ...user, role: preservedRole() };
+      return applyPinnedRole({ ...user, role: preservedRole() });
     }
-    const role: Role = (count ?? 0) === 0 || preservedRole() === 'Administrator'
+    const role: Role = isPinnedAdministrator(user.email) || (count ?? 0) === 0 || preservedRole() === 'Administrator'
       ? 'Administrator'
       : 'Viewer';
-    const next: User = { ...user, role };
+    const next = applyPinnedRole({ ...user, role });
     const { error: insertError } = await supabase.from('user_roles').insert({
       id: next.id,
       name: next.name,
@@ -280,7 +305,7 @@ export async function ensureUserRow(user: User): Promise<User> {
     });
     if (insertError) {
       const raced = await readRow();
-      if (raced.user) return raced.user;
+      if (raced.user) return applyPinnedRole(raced.user);
       if (!isMissingRelation(insertError) && !isTransientNetworkError(insertError)) {
         logStoreError('Failed to create user role', insertError);
       }
@@ -292,17 +317,18 @@ export async function ensureUserRow(user: User): Promise<User> {
       logStoreError('Failed to ensure user role', err);
     }
     const fallback = await readRow().catch(() => ({ user: null, failed: true }));
-    return fallback.user ?? { ...user, role: preservedRole() };
+    return applyPinnedRole(fallback.user ?? { ...user, role: preservedRole() });
   }
 }
 
 export async function upsertUserRole(user: User): Promise<boolean> {
   try {
+    const next = applyPinnedRole(user);
     const { error } = await supabase.from('user_roles').upsert({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
+      id: next.id,
+      name: next.name,
+      email: next.email,
+      role: next.role,
       updated_at: new Date().toISOString(),
     });
     if (error) {
@@ -310,7 +336,7 @@ export async function upsertUserRole(user: User): Promise<boolean> {
       logStoreError('Failed to save user', error);
       return false;
     }
-    rememberExactUser(user);
+    rememberExactUser(next);
     return true;
   } catch (err) {
     if (isMissingRelation(err) || isTransientNetworkError(err)) return false;

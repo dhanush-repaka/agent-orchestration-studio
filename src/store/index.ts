@@ -32,7 +32,7 @@ import {
 import { loadAuditLogs, newAuditLog, persistAuditLog } from '@/lib/audit';
 import {
   hydrateUserRoster, pickSignedInUser, signedInFromAuth, rememberedUser, mergeUserRoster,
-  resolveSignedInWorkspace, upsertUserRole, writeLocalUserRoster,
+  resolveSignedInWorkspace, upsertUserRole, writeLocalUserRoster, isPinnedAdministrator,
 } from '@/lib/users';
 import { canRole, type Permission } from '@/lib/roles';
 import { runAgentEvalCase, scoreOutputs } from '@/lib/evaluate';
@@ -591,7 +591,7 @@ export const useStore = create<AppState>((set, get) => ({
   restoreAdministrator: async () => {
     const me = get().currentUser;
     if (!me.id || get().authStatus !== 'signed-in') return false;
-    if (get().users.some((row) => row.id !== me.id && isAdministrator(row.role))) return false;
+    if (!isPinnedAdministrator(me.email) && get().users.some((row) => row.id !== me.id && isAdministrator(row.role))) return false;
     const next = { ...me, role: 'Administrator' as const };
     await upsertUserRole(next);
     const currentUser = applyEnvAccess(next, get().userEnvAccess);
@@ -806,6 +806,20 @@ export const useStore = create<AppState>((set, get) => ({
         authStatus: 'signed-in',
         currentUser: signedInFromAuth(stub, s.currentUser, rememberedUser(stub.id)),
       }));
+      void resolveSignedInWorkspace({ ...stub, role: get().currentUser.role }).then(({ current, users }) => {
+        if (get().authStatus !== 'signed-in' || get().currentUser.id !== current.id) return;
+        set((s) => {
+          const currentUser = applyEnvAccess(current, s.userEnvAccess);
+          const roster = mergeUserRoster(users, s.users, currentUser).map((row) => applyEnvAccess(row, s.userEnvAccess));
+          return {
+            users: roster,
+            currentUser,
+            environment: snapEnvironment(s.environment, currentUser, s.environments),
+          };
+        });
+      }).catch((err) => {
+        logStoreError('resolveSignedInWorkspace', err);
+      });
       authIntent = 'idle';
       return { ok: true, error: '' };
     } catch (err) {
@@ -822,6 +836,9 @@ export const useStore = create<AppState>((set, get) => ({
       logStoreError('signOut', err);
     } finally {
       authIntent = 'idle';
+      if (typeof window !== 'undefined') {
+        window.location.assign('/');
+      }
     }
   },
 
@@ -1307,6 +1324,10 @@ export const useStore = create<AppState>((set, get) => ({
     }
     const prev = get().users.find((u) => u.id === id)
       ?? (get().currentUser.id === id ? get().currentUser : undefined);
+    if (isPinnedAdministrator(prev?.email) && patch.role && patch.role !== 'Administrator') {
+      get().addToast('This account is pinned as administrator', 'error');
+      return;
+    }
     if (prev?.role === 'Administrator' && patch.role && patch.role !== 'Administrator') {
       const otherAdmins = get().users.filter((u) => u.id !== id && u.role === 'Administrator');
       if (!otherAdmins.length) {

@@ -1,5 +1,6 @@
 import type { User as AuthUser } from '@supabase/supabase-js';
 import type { User } from '@/types';
+import { applyPinnedRole } from '@/lib/users';
 
 export function userFromAuth(authUser: AuthUser): User {
   const email = authUser.email?.trim() || '';
@@ -7,12 +8,12 @@ export function userFromAuth(authUser: AuthUser): User {
     ? authUser.user_metadata.full_name.trim()
     : '';
   const name = metaName || (email.includes('@') ? email.split('@')[0] : 'Studio user');
-  return {
+  return applyPinnedRole({
     id: authUser.id,
     name,
     email,
     role: 'Viewer',
-  };
+  });
 }
 
 export function clearLocalAuthSession(): void {

@@ -13,7 +13,7 @@ describe('auth', () => {
       id: 'abc-123',
       email: 'dhanush@qefoundry.com',
       name: 'Dhanush Repaka',
-      role: 'Viewer',
+      role: 'Administrator',
     });
   });
 

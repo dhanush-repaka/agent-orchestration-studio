@@ -1,6 +1,6 @@
 import type { User as AuthUser } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
-import { authErrorMessage, clearLocalAuthSession } from '@/lib/auth';
+import { authErrorMessage } from '@/lib/auth';
 
 export type AuthIntent = 'idle' | 'in' | 'out';
 
@@ -15,20 +15,42 @@ export function acceptAuthListenerEvent(
   return false;
 }
 
+async function withTimeout<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function loginWithPassword(email: string, password: string): Promise<{
   ok: boolean;
   error: string;
   user: AuthUser | null;
 }> {
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email: email.trim(),
-    password,
-  });
-  if (error) return { ok: false, error: authErrorMessage(error), user: null };
-  if (!data.session || !data.user) {
-    return { ok: false, error: 'Authentication failed.', user: null };
+  try {
+    const { data, error } = await withTimeout(
+      supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      }),
+      15000,
+      'Sign-in is taking too long. Refresh the page and try again.',
+    );
+    if (error) return { ok: false, error: authErrorMessage(error), user: null };
+    if (!data.session || !data.user) {
+      return { ok: false, error: 'Authentication failed.', user: null };
+    }
+    return { ok: true, error: '', user: data.user };
+  } catch (err) {
+    return { ok: false, error: authErrorMessage(err), user: null };
   }
-  return { ok: true, error: '', user: data.user };
 }
 
 export async function registerWithPassword(email: string, password: string, name?: string): Promise<{
@@ -52,9 +74,13 @@ export async function registerWithPassword(email: string, password: string, name
 
 export async function logoutLocal(): Promise<void> {
   try {
-    await supabase.auth.signOut({ scope: 'local' });
-  } finally {
-    clearLocalAuthSession();
+    await withTimeout(
+      supabase.auth.signOut(),
+      4000,
+      'Sign-out timed out',
+    );
+  } catch {
+    // Reload after logout resets a stuck auth client.
   }
 }
 
