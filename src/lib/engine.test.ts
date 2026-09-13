@@ -172,6 +172,34 @@ describe('human approval', () => {
 });
 
 describe('user story workflow', () => {
+  it('calls ADO retrieval once when the credential lookup fails', async () => {
+    const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
+    let retrievals = 0;
+    const invoke: InvokeFn = async (slug) => {
+      if (slug === 'ado-retrieval') {
+        retrievals += 1;
+        return { ok: false, status: 500, data: { error: 'Could not load the Azure DevOps credential' } as never };
+      }
+      if (slug === 'ado-upload' || slug.startsWith('playwright-')) {
+        return { ok: false, status: 500, data: { error: 'offline' } as never };
+      }
+      return { ok: true, status: 200, data: { result: { ok: true }, llmUsage: { total_tokens: 1 } } as never };
+    };
+    const run = await executeWorkflow({
+      workflow: { ...SAMPLE_WORKFLOW, nodes: SAMPLE_WORKFLOW.nodes.filter((n) => n.id === 'n1' || n.id === 'n2'), edges: SAMPLE_WORKFLOW.edges.filter((e) => e.source === 'n1' && e.target === 'n2') },
+      agents: AGENTS,
+      runtimeInput: '{"workItemId":44}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      callbacks: { isCancelled: () => false, onNodeStatus: () => {}, waitForApproval: async () => true },
+    });
+    expect(retrievals).toBe(1);
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n2')?.status).toBe('completed');
+    expect(run.nodeExecutions.find((n) => n.nodeId === 'n2')?.output).toContain('retrievalError');
+    expect(run.logs.some((log) => /Retry/.test(log.message))).toBe(false);
+  });
+
   it('runs start to end using fallbacks when ADO is offline', async () => {
     const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
     const invoke: InvokeFn = async (slug, payload) => {

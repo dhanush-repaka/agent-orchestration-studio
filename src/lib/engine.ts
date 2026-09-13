@@ -320,6 +320,7 @@ async function runAgentNode(
     const { ok, data } = await invoke<Record<string, unknown>>('ado-retrieval', {
       workItemId: typeof workItemId === 'number' ? workItemId : Number(workItemId) || workItemId,
       adoOrg: cfg.adoOrg || undefined,
+      adoProject: cfg.adoProject || undefined,
       adoApiVersion: cfg.adoApiVersion || undefined,
     });
     if (ok && !data.error) {
@@ -1142,7 +1143,8 @@ export async function executeWorkflow(opts: {
         }
         default: {
           if (node.data.kind === 'agent') {
-            const retries = Math.max(0, cfg.retryCount ?? agent?.retryCount ?? 0);
+            const toolAgent = agent?.type === 'Data Retrieval' || agent?.type === 'ADO Upload';
+            const retries = toolAgent ? 0 : Math.max(0, cfg.retryCount ?? agent?.retryCount ?? 0);
             let last: Awaited<ReturnType<typeof runAgentNode>> | null = null;
             for (let attempt = 0; attempt <= retries; attempt++) {
               last = await runAgentNode(node, agent, wf, workflowInput, nodeOutputs, nodes, agentMap, (l, s, m) => addLog(l, s, m, currentId), invoke);

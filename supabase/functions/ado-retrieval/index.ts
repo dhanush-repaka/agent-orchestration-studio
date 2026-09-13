@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { resolveAdoPat } from "../_shared/adoAuth.ts";
 import { serverAdoOrg } from "../_shared/ssrf.ts";
 import { normalizeAdoFields } from "../_shared/adoWorkItem.ts";
 
@@ -12,6 +13,7 @@ const corsHeaders = {
 interface RetrieveRequest {
   workItemId: number | string;
   adoOrg?: string;
+  adoProject?: string;
   adoApiVersion?: string;
   adoPat?: string;
 }
@@ -42,31 +44,13 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Read the PAT from the credentials table using the service role key.
-    // The service role key bypasses RLS, so it can read the value column
-    // even though anon/authenticated cannot.
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    const { data: credRow, error: credError } = await supabase
-      .from("credentials")
-      .select("value")
-      .eq("name", "Azure DevOps PAT")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (credError) {
-      console.error("ado-retrieval credential read failed", credError);
-      return new Response(
-        JSON.stringify({ error: "Could not load the Azure DevOps credential" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
     const incomingPat = typeof body.adoPat === "string" ? body.adoPat.trim() : "";
-    const adoPat = incomingPat || credRow?.value || Deno.env.get("ADO_PAT") || "";
+    const resolved = await resolveAdoPat(supabase, incomingPat);
+    const adoPat = resolved.pat;
 
     if (incomingPat) {
       await supabase.from("credentials").upsert({
@@ -81,7 +65,7 @@ Deno.serve(async (req: Request) => {
 
     if (!adoPat) {
       return new Response(
-        JSON.stringify({ error: "Azure DevOps PAT not found in credentials table. Please add it in the Credentials page." }),
+        JSON.stringify({ error: resolved.error ?? "Azure DevOps PAT not found. Add it on the Credentials page." }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
@@ -101,31 +85,34 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const adoUrl = `https://dev.azure.com/${cleanOrg}/_apis/wit/workitems/${cleanId}?api-version=${apiVersion}`;
-    const altAdoUrl = `https://${cleanOrg}.visualstudio.com/_apis/wit/workitems/${cleanId}?api-version=${apiVersion}`;
+    const project = String(body.adoProject ?? "").replace(/[^a-zA-Z0-9 _.-]/g, "").trim();
+    const urls = [
+      `https://dev.azure.com/${cleanOrg}/_apis/wit/workitems/${cleanId}?$expand=all&api-version=${apiVersion}`,
+      project
+        ? `https://dev.azure.com/${cleanOrg}/${encodeURIComponent(project)}/_apis/wit/workitems/${cleanId}?$expand=all&api-version=${apiVersion}`
+        : "",
+      `https://${cleanOrg}.visualstudio.com/_apis/wit/workitems/${cleanId}?$expand=all&api-version=${apiVersion}`,
+    ].filter(Boolean);
     const patAuth = btoa(`:${adoPat}`);
-    let adoRes = await fetch(adoUrl, {
-      headers: {
-        "Authorization": `Basic ${patAuth}`,
-        "Accept": "application/json",
-      },
-    });
-    let usedUrl = adoUrl;
-    if (!adoRes.ok && adoRes.status === 404) {
-      adoRes = await fetch(altAdoUrl, {
+    let adoRes: Response | null = null;
+    let usedUrl = urls[0];
+    for (const url of urls) {
+      adoRes = await fetch(url, {
         headers: {
           "Authorization": `Basic ${patAuth}`,
           "Accept": "application/json",
         },
       });
-      usedUrl = altAdoUrl;
+      usedUrl = url;
+      if (adoRes.ok || (adoRes.status !== 404 && adoRes.status !== 401)) break;
     }
 
-    if (!adoRes.ok) {
-      const adoErr = await adoRes.text();
-      console.error("ado-retrieval ADO request failed", adoRes.status, usedUrl, adoErr);
+    if (!adoRes || !adoRes.ok) {
+      const status = adoRes?.status ?? 0;
+      const adoErr = adoRes ? await adoRes.text() : "";
+      console.error("ado-retrieval ADO request failed", status, usedUrl, adoErr);
       return new Response(
-        JSON.stringify({ error: "Could not load the work item" }),
+        JSON.stringify({ error: `Could not load the work item (${status || "no response"})` }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }

@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { resolveAdoPat } from "../_shared/adoAuth.ts";
 import { defaultAdoRepoName, linkWorkItemHyperlink, upsertAdoGitRepo, type AdoRepoFile } from "../_shared/adoGit.ts";
 import { serverAdoOrg } from "../_shared/ssrf.ts";
 
@@ -95,28 +96,13 @@ Deno.serve(async (req: Request) => {
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    const { data: credRow, error: credError } = await supabase
-      .from("credentials")
-      .select("value")
-      .eq("name", "Azure DevOps PAT")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (credError) {
-      console.error("ado-upload credential read failed", credError);
-      return new Response(
-        JSON.stringify({ error: "Could not load the Azure DevOps credential" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
     const incomingPat = typeof body.adoPat === "string" ? body.adoPat.trim() : "";
-    const adoPat = incomingPat || credRow?.value || Deno.env.get("ADO_PAT") || "";
+    const resolved = await resolveAdoPat(supabase, incomingPat);
+    const adoPat = resolved.pat;
 
     if (!adoPat) {
       return new Response(
-        JSON.stringify({ error: "Azure DevOps PAT not found in credentials table. Please add it in the Credentials page." }),
+        JSON.stringify({ error: resolved.error ?? "Azure DevOps PAT not found. Add it on the Credentials page." }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }

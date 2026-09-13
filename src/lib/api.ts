@@ -1,4 +1,12 @@
 const ADO_SLUGS = new Set(['ado-retrieval', 'ado-upload']);
+export const ADO_INVOKE_TIMEOUT_MS = 15_000;
+
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  return undefined;
+}
 
 function withLocalAdoSecrets(slug: string, payload: Record<string, unknown>): Record<string, unknown> {
   if (!ADO_SLUGS.has(slug) || typeof localStorage === 'undefined') return payload;
@@ -53,12 +61,14 @@ export async function callEdgeFunction<T = unknown>(
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          signal: ADO_SLUGS.has(slug) ? timeoutSignal(ADO_INVOKE_TIMEOUT_MS) : undefined,
         });
         const contentType = localRes.headers.get('content-type') || '';
         const raw = await localRes.text();
-        if (slug.startsWith('playwright-') && !looksLikeJson(contentType, raw)) {
+        if (!looksLikeJson(contentType, raw)) {
           lastHtmlStatus = localRes.status;
-          continue;
+          if (slug.startsWith('ado-')) continue;
+          if (slug.startsWith('playwright-')) continue;
         }
         const localData = (looksLikeJson(contentType, raw) ? (() => { try { return JSON.parse(raw) as T; } catch { return {} as T; } })() : {} as T);
         if (localRes.ok || slug.startsWith('playwright-')) {
@@ -113,14 +123,20 @@ export async function callEdgeFunction<T = unknown>(
         Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
       },
       body: JSON.stringify(body),
+      signal: ADO_SLUGS.has(slug) ? timeoutSignal(ADO_INVOKE_TIMEOUT_MS) : undefined,
     });
     const data = (await res.json().catch(() => ({}))) as T;
     return { ok: res.ok, status: res.status, data };
   } catch (err) {
+    const timedOut = err instanceof Error && /abort|timeout/i.test(err.name + err.message);
     return {
       ok: false,
       status: 0,
-      data: { error: err instanceof Error ? err.message : 'Network error' } as T,
+      data: {
+        error: timedOut
+          ? 'Azure DevOps retrieval timed out. Check the PAT on the Credentials page.'
+          : err instanceof Error ? err.message : 'Network error',
+      } as T,
     };
   }
 }
