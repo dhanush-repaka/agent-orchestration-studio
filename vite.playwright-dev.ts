@@ -30,8 +30,8 @@ export function playwrightDevRunner(): Plugin {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const path = req.url?.split('?')[0] ?? '';
-        if (req.method === 'GET' && path.startsWith('/__studio/playwright-artifacts/')) {
-          servePlaywrightArtifact(path, res);
+        if ((req.method === 'GET' || req.method === 'HEAD') && path.startsWith('/__studio/playwright-artifacts/')) {
+          servePlaywrightArtifact(path, res, req.method === 'HEAD');
           return;
         }
         if (req.method !== 'POST' || (path !== '/__studio/playwright-execute' && path !== '/__studio/playwright-locators')) {
@@ -64,26 +64,37 @@ const ARTIFACT_TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
   '.zip': 'application/zip',
   '.json': 'application/json',
   '.webm': 'video/webm',
+  '.md': 'text/markdown; charset=utf-8',
+  '.ttf': 'font/ttf',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.map': 'application/json',
 };
 
-function servePlaywrightArtifact(urlPath: string, res: ServerResponse) {
-  const match = urlPath.match(/^\/__studio\/playwright-artifacts\/(pw-[A-Za-z0-9-]+)\/(.+)$/);
+function servePlaywrightArtifact(urlPath: string, res: ServerResponse, headOnly = false) {
+  const match = urlPath.match(/^\/__studio\/playwright-artifacts\/(pw-[A-Za-z0-9-]+)(?:\/(.*))?$/);
   if (!match) {
     res.statusCode = 404;
     res.end('Not found');
     return;
   }
-  const rel = decodeURIComponent(match[2]);
+  const rel = decodeURIComponent(match[2] || 'playwright-report/index.html');
   if (rel.includes('..')) {
     res.statusCode = 403;
     res.end('Forbidden');
     return;
   }
   const root = resolve(process.cwd(), '.aos-runs', match[1]);
-  const file = resolve(root, rel);
+  let file = resolve(root, rel || 'playwright-report/index.html');
+  if (existsSync(file) && statSync(file).isDirectory()) {
+    file = resolve(file, 'index.html');
+  }
   if (!file.startsWith(root) || !existsSync(file) || !statSync(file).isFile()) {
     res.statusCode = 404;
     res.end('Not found');
@@ -91,5 +102,11 @@ function servePlaywrightArtifact(urlPath: string, res: ServerResponse) {
   }
   res.statusCode = 200;
   res.setHeader('Content-Type', ARTIFACT_TYPES[extname(file).toLowerCase()] || 'application/octet-stream');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Length', String(statSync(file).size));
+  if (headOnly) {
+    res.end();
+    return;
+  }
   createReadStream(file).pipe(res);
 }

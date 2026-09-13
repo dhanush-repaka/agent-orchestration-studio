@@ -15,6 +15,19 @@ export function userFromAuth(authUser: AuthUser): User {
   };
 }
 
+export function clearLocalAuthSession(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem('aos-auth');
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('sb-') && key.includes('auth-token')) localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore private-mode failures.
+  }
+}
+
 export function authErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error ?? '');
   if (/invalid login credentials/i.test(raw)) return 'Email or password is incorrect.';

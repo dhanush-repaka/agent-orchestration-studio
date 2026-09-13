@@ -1,4 +1,7 @@
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { defaultAdoRepoName, linkWorkItemHyperlink, upsertAdoGitRepo, type AdoRepoFile } from '../src/lib/adoGit';
+import { zipPlaywrightReport } from './playwright-run';
 
 export type { AdoRepoFile };
 
@@ -16,6 +19,7 @@ export type AdoTestCase = {
 export type AdoAttachment = {
   fileName: string;
   content: string;
+  encoding?: 'utf8' | 'base64';
   comment?: string;
 };
 
@@ -58,6 +62,7 @@ export async function publishToAzureDevOps(body: {
   adoTags?: string;
   adoPat?: string;
   linkToSource?: boolean;
+  playwrightArtifactDir?: string;
 }): Promise<{ status: number; body: Record<string, unknown> }> {
   const adoOrg = cleanOrg(String(process.env.ADO_ORG || 'aiqenexus'));
   const apiVersion = String(body.adoApiVersion || '7.0');
@@ -67,6 +72,21 @@ export async function publishToAzureDevOps(body: {
   const adoPat = String(body.adoPat || '').trim();
   const testCases = Array.isArray(body.testCases) ? body.testCases : [];
   const attachments = Array.isArray(body.attachments) ? body.attachments.filter((a) => a?.fileName && a.content) : [];
+  const artifactId = String(body.playwrightArtifactDir || '').trim();
+  if (/^pw-[A-Za-z0-9-]+$/.test(artifactId) && !attachments.some((file) => file.fileName === 'playwright-report.zip')) {
+    const runDir = resolve(process.cwd(), '.aos-runs', artifactId);
+    if (existsSync(runDir)) {
+      const zip = zipPlaywrightReport(runDir);
+      if (zip) {
+        attachments.push({
+          fileName: 'playwright-report.zip',
+          content: zip.toString('base64'),
+          encoding: 'base64',
+          comment: 'Official Playwright HTML report with traces and screenshots',
+        });
+      }
+    }
+  }
   const repoFiles = Array.isArray(body.repoFiles) ? body.repoFiles.filter((file) => file?.path && file.content) : [];
 
   if (!adoPat) {
@@ -174,7 +194,7 @@ export async function publishToAzureDevOps(body: {
           {
             method: 'POST',
             headers: { ...authHeaders, 'Content-Type': 'application/octet-stream' },
-            body: file.content,
+            body: file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : file.content,
           },
         );
         if (!attachRes.ok) {

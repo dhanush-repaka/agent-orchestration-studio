@@ -8,6 +8,7 @@ import {
   classifyExecutableCase,
   buildPlaywrightHtmlReport,
   buildQeMarkdownReport,
+  collectPlaywrightMediaAttachments,
   countPlaywrightTests,
   applyDiscoveredLocators,
   extractGotoPaths,
@@ -163,9 +164,25 @@ Running 2 tests using 1 worker
     ]);
     expect(next).toContain('User can request a reset email');
     expect(next).toContain('Open the profile page');
-    expect(next).toContain('Reset email is sent');
-    expect(next).not.toContain('Passw0rd!');
+    expect(next).toContain('await page.goto("/")');
+    expect(next).not.toContain('toContainText("Reset email is sent")');
     expect(next).not.toContain('register.htm');
+  });
+
+  it('does not assert invented expected-outcome sentences as page text', () => {
+    const next = buildExecutableSuiteFromCases([
+      {
+        title: 'Successful Parabank Registration',
+        steps: ['Goto Parabank site', 'Click the Register link.', 'Submit the registration form.'],
+        expectedOutcome: 'User is successfully registered and redirected to the confirmation page.',
+      },
+    ]);
+    expect(next).toContain('await page.goto("/")');
+    expect(next).toContain('Passw0rd!');
+    expect(next).toContain('name: /^register$/i');
+    expect(next).not.toContain('Forgot login');
+    expect(next).not.toMatch(/register\|sign \?up\|create account\|log \?in/);
+    expect(next).not.toContain('User is successfully registered and redirected to the confirmation page.');
   });
 
   it('classifies by title so description words like successfully do not flip the kind', () => {
@@ -224,6 +241,7 @@ test("Open about", async ({ page }) => { await page.goto("/about"); });`;
     const base = 'https://app.test/shop';
     expect(resolveAppUrl('/register.htm', base)).toBe('https://app.test/shop/register.htm');
     expect(rewriteSpecUrls('await page.goto("/register.htm");', base)).toContain('/shop/register.htm');
+    expect(rewriteSpecUrls('await page.goto("");', base)).toContain('https://app.test/shop/');
   });
 
   it('resolves base URL from workflow input, then node config', () => {
@@ -231,6 +249,21 @@ test("Open about", async ({ page }) => { await page.goto("/about"); });`;
     expect(resolvePlaywrightBaseUrl({ playwrightBaseUrl: 'https://example.test/' }, {})).toBe('https://example.test');
     expect(resolvePlaywrightBaseUrl({}, { baseUrl: 'https://app.test' })).toBe('https://app.test');
     expect(resolvePlaywrightBaseUrl({}, {})).toBe(DEFAULT_PLAYWRIGHT_BASE_URL);
+  });
+
+  it('collects screenshot and report zip attachments', () => {
+    expect(collectPlaywrightMediaAttachments({
+      results: [{
+        title: 'Register user',
+        screenshot: 'data:image/png;base64,abcd',
+        traceData: 'data:application/zip;base64,eeff',
+      }],
+      reportZipBase64: 'UEsDBA',
+    }).map((file) => file.fileName)).toEqual([
+      'register-user.png',
+      'register-user-trace.zip',
+      'playwright-report.zip',
+    ]);
   });
 
   it('reads a report URL from execute output', () => {
@@ -280,7 +313,7 @@ test("Open about", async ({ page }) => { await page.goto("/about"); });`;
     expect(html).toContain('passed');
   });
 
-  it('embeds failure screenshots and a Playwright report link', () => {
+  it('embeds screenshots and downloadable traces in the HTML report', () => {
     const html = buildPlaywrightHtmlReport({
       passed: false,
       total: 1,
@@ -290,13 +323,12 @@ test("Open about", async ({ page }) => { await page.goto("/about"); });`;
         status: 'failed',
         error: 'Timeout',
         screenshot: 'data:image/png;base64,abcd',
-        traceUrl: '/__studio/playwright-artifacts/pw-1/test-results/trace.zip',
+        traceData: 'data:application/zip;base64,eeff',
       }],
-      reportUrl: '/__studio/playwright-artifacts/pw-1/playwright-report/index.html',
       source: 'playwright',
     });
     expect(html).toContain('data:image/png;base64,abcd');
-    expect(html).toContain('Download trace');
-    expect(html).toContain('Open the Playwright HTML report');
+    expect(html).toContain('Download Playwright trace');
+    expect(html).not.toContain('/__studio/playwright-artifacts/');
   });
 });

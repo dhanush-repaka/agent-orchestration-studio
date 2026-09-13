@@ -24,6 +24,7 @@ interface UploadRequest {
   attachments?: Array<{
     fileName: string;
     content: string;
+    encoding?: 'utf8' | 'base64';
     comment?: string;
   }>;
   repoFiles?: AdoRepoFile[];
@@ -252,7 +253,9 @@ Deno.serve(async (req: Request) => {
                 ...authHeaders,
                 "Content-Type": "application/octet-stream",
               },
-              body: file.content,
+              body: file.encoding === 'base64'
+                ? Uint8Array.from(atob(file.content), (ch) => ch.charCodeAt(0))
+                : file.content,
             },
           );
           if (!attachRes.ok) {

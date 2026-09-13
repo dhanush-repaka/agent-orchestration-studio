@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authErrorMessage, userFromAuth } from '@/lib/auth';
+import { authErrorMessage, clearLocalAuthSession, userFromAuth } from '@/lib/auth';
 import { pageFromPath } from '@/lib/routes';
 
 describe('auth', () => {
@@ -28,6 +28,27 @@ describe('auth', () => {
   it('explains common auth failures', () => {
     expect(authErrorMessage(new Error('Invalid login credentials'))).toContain('incorrect');
     expect(authErrorMessage(new Error('User already registered'))).toContain('already exists');
+  });
+
+  it('clears persisted Supabase session keys', () => {
+    const store = new Map<string, string>([
+      ['aos-auth', '{"access_token":"x"}'],
+      ['sb-example-auth-token', '{"access_token":"y"}'],
+    ]);
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value); },
+        removeItem: (key: string) => { store.delete(key); },
+        clear: () => { store.clear(); },
+        key: (index: number) => Array.from(store.keys())[index] ?? null,
+        get length() { return store.size; },
+      },
+    });
+    clearLocalAuthSession();
+    expect(store.has('aos-auth')).toBe(false);
+    expect(store.has('sb-example-auth-token')).toBe(false);
   });
 
   it('does not treat /login as a studio page', () => {

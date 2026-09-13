@@ -88,7 +88,7 @@ PLAYWRIGHT_BROWSERS_PATH=0 PLAYWRIGHT_CHROMIUM_USE_HEADLESS_SHELL=0 npm run dev 
 
 Open that URL, then sign in.
 
-## Login
+## Login, logout, and users
 
 The login page uses Supabase Auth.
 
@@ -96,7 +96,21 @@ The login page uses Supabase Auth.
 2. If email confirmation is enabled in Supabase, confirm the email before the first sign-in.
 3. After sign-in the workspace (dashboard, workflows, agents, credentials) loads from Supabase.
 
-Session is stored under the `aos-auth` key. Signing out clears it.
+Sign out from the header account menu or from **Settings → Session**. That clears the `aos-auth` session only. User roles stay in `user_roles` and a local roster cache (`aos-user-roles`).
+
+Roles live in the `user_roles` table. The first signed-in person is promoted to Administrator if none exists. Settings shows **Restore administrator** if the roster has no admin. A hydrate or empty table read will not wipe people or demote an administrator to Viewer.
+
+## Nodes vs agents
+
+A workflow **node** is a step on the canvas. An **agent** is a reusable library item. Those counts do not have to match.
+
+The sample **User Story to Automated Test** graph has **20 nodes**:
+
+- **11 agent steps** (Requirement Analysis, Test Case Generator, Playwright codegen, and so on)
+- **4 tool steps** (locator discovery, execute, re-run, Publish to ADO)
+- **5 control steps** (Start, Review OK?, Tests Passed?, Human Approval, End)
+
+One published agent can sit on more than one node. Start, conditions, approval, and Playwright/ADO tools never come from the Agent Library.
 
 ## Azure DevOps credentials
 
@@ -149,7 +163,15 @@ Then `n10` → `n11` defects → `n11c` condition `{{nodes.n10.passed}}`
 - Tests passed true → `n12` report → `n13` approval → `n14` Publish to ADO → `n15` end
 - Tests passed false → `n17` healing → `n18` re-run → `n12`
 
-`n16` creates test cases. `n14` attaches the report (and repo files when present). If cases were already uploaded, `n14` does not create them again.
+`n16` creates test cases. `n14` attaches the Playwright report and (when present) repo files. If cases were already uploaded, `n14` does not create them again.
+
+`n14` attachments include:
+
+- `playwright-report.html` with embedded screenshots and downloadable traces
+- `playwright-report.zip` (official Playwright HTML report: `index.html`, `data/`, `trace/`)
+- per-test `.png` screenshots and `*-trace.zip` files when those artifacts exist
+
+In Run Details, **Open Playwright report** opens the official HTML report from `.aos-runs/` when that folder is still on disk. If the folder was pruned, it falls back to the embedded HTML. Do not use the old `/__studio/playwright-artifacts/...` link from an ADO attachment. Unzip `playwright-report.zip` or run `npx playwright show-trace` on a trace file.
 
 ## How the agents stay generic
 
@@ -176,7 +198,9 @@ Local (`npm run dev`):
 - Writes `playwright.config.mjs` + `generated.spec.mjs` under `.aos-runs/`
 - Runs Chromium with `cwd` set to that folder (avoids the `playwright.config.ts` dynamic-import crash)
 - Per-test timeout 15s, retries 0
-- Failure screenshots and Playwright traces (`retain-on-failure`). The official HTML report is kept at `.aos-runs/pw-*/playwright-report/` and opened from Run Details
+- Screenshot and trace on every local test (`screenshot: on`, `trace: on`)
+- Official HTML report at `.aos-runs/pw-*/playwright-report/` (served from `/__studio/playwright-artifacts/...` while the folder exists)
+- The same folder is zipped and attached as `playwright-report.zip` when you publish to Azure DevOps
 - Unsets `FORCE_COLOR` and sets `NO_COLOR` so ANSI warnings are not treated as the failure
 
 Hosted (`qefoundry.com`):
@@ -234,6 +258,15 @@ Create a new PAT with Work Items and Code (Read & Write). Save it on the Credent
 
 **Hosted execute stops around 26s**
 Expected. Use `npm run dev` for the full suite.
+
+**Cannot sign in after signing out**
+Refresh and try again. Sign-in applies the session from the API response. Sign-out clears `aos-auth` only after Supabase finishes, and will not wipe `aos-user-roles`.
+
+**Signed in as Viewer / people missing in Settings**
+Click **Restore administrator** if no admin is listed. Roles are merged from `user_roles` and the local roster. A Viewer stub from Auth will not overwrite Administrator.
+
+**Playwright report link 404**
+The `/__studio/playwright-artifacts/...` URL only works on local Vite while that run folder exists. Use **Open Playwright report** in Run Details, or download `playwright-report.zip` from the ADO work item.
 
 **Chromium missing**
 Run `npm run playwright:install`. On Apple Silicon set `PLAYWRIGHT_BROWSERS_PATH=0` and `PLAYWRIGHT_CHROMIUM_USE_HEADLESS_SHELL=0` when starting Vite.

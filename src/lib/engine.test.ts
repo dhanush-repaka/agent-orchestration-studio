@@ -416,7 +416,7 @@ describe('user story workflow', () => {
     expect(run.nodeExecutions.map((n) => n.nodeId)).not.toContain('n19');
   });
 
-  it('uses acceptance criteria from the retrieved work item instead of a login catalog', async () => {
+  it('asks the model for multiple cases grounded in the retrieved work item', async () => {
     const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
     const invoke: InvokeFn = async (slug, payload) => {
       if (slug === 'ado-retrieval') {
@@ -447,14 +447,19 @@ describe('user story workflow', () => {
         return { ok: slug !== 'ado-upload', status: slug === 'ado-upload' ? 500 : 200, data: { error: 'skip', locators: [], passed: true, total: 2, failed: 0, results: [] } as never };
       }
       const type = String((payload as { agentType?: string }).agentType ?? '');
-      if (type === 'Test Case Generator') {
-        throw new Error('Test Case Generator should use the retrieved work item');
-      }
-      const result = type === 'Playwright Automation'
-        ? 'import { test } from "@playwright/test";\ntest("User can request a reset email", async ({ page }) => { await page.goto(""); });'
-        : type === 'Requirement Analysis'
-          ? { workItemId: '21', title: 'Parabank Registration', qualityScore: 82, acceptanceCriteria: ['valid details'] }
-          : { ok: true };
+      const result = type === 'Test Case Generator'
+        ? {
+          testCases: [
+            { title: 'User can request a reset email', type: 'functional', priority: 'high', expectedOutcome: 'Reset email is sent' },
+            { title: 'Token expires after 15 minutes', type: 'functional', priority: 'medium', expectedOutcome: 'Expired token is rejected' },
+            { title: 'Reset with an unknown email is rejected', type: 'negative', priority: 'medium', expectedOutcome: 'No reset email is sent' },
+          ],
+        }
+        : type === 'Playwright Automation'
+          ? 'import { test } from "@playwright/test";\ntest("User can request a reset email", async ({ page }) => { await page.goto(""); });'
+          : type === 'Requirement Analysis'
+            ? { workItemId: '21', title: 'Parabank Registration', qualityScore: 82, acceptanceCriteria: ['valid details'] }
+            : { ok: true };
       return { ok: true, status: 200, data: { result, llmUsage: { total_tokens: 4 } } as never };
     };
 
@@ -473,12 +478,65 @@ describe('user story workflow', () => {
     });
 
     const generated = JSON.parse(run.nodeExecutions.find((n) => n.nodeId === 'n5')?.output ?? '{}');
-    expect(generated.source).toBe('work-item');
+    expect(generated.source).toBe('llm');
     expect(generated.testCases.map((item: { title: string }) => item.title)).toEqual([
       'User can request a reset email',
       'Token expires after 15 minutes',
+      'Reset with an unknown email is rejected',
     ]);
     expect(generated.testCases[0].title).not.toMatch(/login/i);
+  });
+
+  it('recovers test cases when the model wraps JSON in prose', async () => {
+    const { SAMPLE_WORKFLOW, AGENTS } = await import('@/data/mock');
+    let requestedModel = '';
+    const invoke: InvokeFn = async (slug, payload) => {
+      if (slug === 'ado-retrieval') {
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            workItemId: 8,
+            source: 'azure-devops',
+            normalized: { id: 8, title: 'Notify user', acceptanceCriteria: ['email is sent'] },
+            extractedFields: { id: 8, title: 'Notify user', acceptanceCriteria: ['email is sent'] },
+          } as never,
+        };
+      }
+      if (slug === 'ado-upload' || slug.startsWith('playwright-')) {
+        return { ok: false, status: 500, data: { error: 'skip' } as never };
+      }
+      const type = String((payload as { agentType?: string }).agentType ?? '');
+      if (type === 'Test Case Generator') {
+        requestedModel = String((payload as { modelName?: string }).modelName ?? '');
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            result: { raw: 'Sure.\n```json\n{"testCases":[{"title":"Email is sent","type":"functional","priority":"high","expectedOutcome":"inbox has the mail"}]}\n```' },
+            llmUsage: { total_tokens: 9 },
+          } as never,
+        };
+      }
+      return { ok: true, status: 200, data: { result: { ok: true }, llmUsage: { total_tokens: 1 } } as never };
+    };
+    const run = await executeWorkflow({
+      workflow: {
+        ...SAMPLE_WORKFLOW,
+        nodes: SAMPLE_WORKFLOW.nodes.filter((n) => ['n1', 'n2', 'n3', 'n5'].includes(n.id)),
+        edges: SAMPLE_WORKFLOW.edges.filter((e) => ['e1', 'e2', 'e3'].includes(e.id)),
+      },
+      agents: AGENTS,
+      runtimeInput: '{"workItemId":8}',
+      triggeredBy: 'test',
+      invoke,
+      delayMs: 0,
+      preferredModel: 'gpt-5-mini',
+      callbacks: { isCancelled: () => false, onNodeStatus: () => {}, waitForApproval: async () => true },
+    });
+    const generated = JSON.parse(run.nodeExecutions.find((n) => n.nodeId === 'n5')?.output ?? '{}');
+    expect(requestedModel).toBe('gpt-5-mini');
+    expect(generated.testCases[0].title).toBe('Email is sent');
   });
 
   it('rewrites the Playwright spec when Code Review scores it badly', async () => {

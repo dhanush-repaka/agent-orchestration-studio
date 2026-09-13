@@ -5,7 +5,7 @@ import type {
 } from "./types.ts";
 import { evaluateCondition, getByPath, interpolate, parseJson, type InterpContext } from "./interpolate.ts";
 import { collectAdoAttachments, collectAdoRepoFiles } from "./adoArtifacts.ts";
-import { extractAdoWorkItem, testCasesFromWorkItem } from "./adoWorkItem.ts";
+import { extractAdoWorkItem, testCaseGeneratorPrompt } from "./adoWorkItem.ts";
 import { defaultAdoRepoName } from "./adoGit.ts";
 import {
   buildExecutableSuiteFromCases,
@@ -419,16 +419,10 @@ async function runAgentNode(
   }
   if (agent.type === 'Test Case Generator') {
     const workItem = extractAdoWorkItem(upstream, workflowInput);
-    const fromWorkItem = testCasesFromWorkItem(workItem);
-    if (fromWorkItem?.length) {
-      log('info', 'agent', `Using ${fromWorkItem.length} scenario(s) from the retrieved work item`);
-      return {
-        output: JSON.stringify({ testCases: fromWorkItem, source: 'work-item' }, null, 2),
-        tokens: 0,
-        model: 'work-item-scenarios',
-      };
-    }
-    payload.userPrompt = `Generate automatable test cases only from this retrieved work item. Use its title, description, acceptance criteria, repro steps, and listed scenarios. Do not add a generic login, registration, SQL injection, performance, or accessibility catalog unless that behavior is in the work item. The number of cases should match the work item, not a fixed count.\n\nWork item:\n${stringifyOutput(workItem ?? workflowInput)}\n\nUpstream analysis:\n${stringifyOutput(resolvedInputs)}\n\nPrevious node:\n${stringifyOutput(ctx.previousOutput)}`;
+    payload.userPrompt = testCaseGeneratorPrompt(workItem ?? workflowInput, {
+      analysis: resolvedInputs,
+      previous: ctx.previousOutput,
+    });
   }
   if (agent.type === 'Playwright Automation') {
     const execute = findLatestPlaywrightExecute(nodeOutputs);
@@ -837,10 +831,12 @@ export async function executeWorkflow(opts: {
               `Publishing ${casesToCreate.length} test case(s), ${attachments.length} attachment(s), and ${repoFiles.length} repo file(s) to Azure DevOps`,
               currentId,
             );
+            const execute = findLatestPlaywrightExecute(nodeOutputs);
             const { ok, data } = await invoke<Record<string, unknown>>('ado-upload', {
               testCases: casesToCreate,
               attachments,
               repoFiles,
+              playwrightArtifactDir: typeof execute?.artifactDir === 'string' ? execute.artifactDir : undefined,
               adoRepoName: cfg.adoRepoName || defaultAdoRepoName(sourceWorkItemId, typeof ado?.title === 'string' ? ado.title : undefined),
               sourceWorkItemId,
               adoOrg: cfg.adoOrg || undefined,

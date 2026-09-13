@@ -290,8 +290,9 @@ export function resolveAppUrl(path: string, baseUrl: string): string {
 }
 
 export function rewriteSpecUrls(spec: string, baseUrl: string): string {
-  return spec.replace(/page\.goto\(\s*(['"`])([^'"`]+)\1/g, (_match, quote: string, url: string) => (
-    `page.goto(${quote}${resolveAppUrl(url, baseUrl)}${quote}`
+  if (!baseUrl.trim()) return spec.replace(/page\.goto\(\s*(['"`])\1/g, 'page.goto($1/$1');
+  return spec.replace(/page\.goto\(\s*(['"`])([^'"`]*)\1/g, (_match, quote: string, url: string) => (
+    `page.goto(${quote}${resolveAppUrl(url || '/', baseUrl)}${quote}`
   ));
 }
 
@@ -454,10 +455,11 @@ export type ExecutableKind = 'visible' | 'navigate' | 'required' | 'submit' | 'n
 export function classifyExecutableCase(title: string, extras = ''): ExecutableKind {
   const t = title.toLowerCase();
   const blob = `${title}\n${extras}`.toLowerCase();
+  if (/performance|accessibility|screen reader/.test(t)) return 'visible';
   if (/navigat|from home|register link|sign ?up link|page access|reachable/.test(t)) return 'navigate';
   if (/(missing|empty|blank|without)\b/.test(t) && /mandatory|required|field/.test(t)) return 'required';
   if (/\b(success(ful)?|valid data|valid details|happy path)\b/.test(t) && !/navigat/.test(t)) return 'submit';
-  if (/\b(invalid|sql|injection|xss|security|boundary|edge|mismatch)\b/.test(blob)) return 'negative';
+  if (/\b(invalid|sql|injection|xss|security|boundary|edge|mismatch|duplicate)\b/.test(blob)) return 'negative';
   return 'visible';
 }
 
@@ -467,19 +469,25 @@ function inferFormPath(spec: string, _cases: ExecutableCase[]): string {
   return form ?? '';
 }
 
-function bodyFromWorkItemSteps(tc: ExecutableCase): string | null {
-  const steps = (tc.steps ?? []).map((step) => String(step).trim()).filter(Boolean);
-  if (!steps.length) return null;
-  const expected = String(tc.expectedOutcome ?? '').trim();
-  const lines = [
-    '    await page.goto("");',
-    '    await expect(page.locator("body")).toBeVisible();',
-    ...steps.map((step) => `    // ${step.replace(/\s+/g, ' ')}`),
-  ];
-  if (expected) {
-    lines.push(`    await expect(page.locator("body")).toContainText(${JSON.stringify(expected)});`);
-  }
-  return lines.join('\n');
+function stepComments(tc: ExecutableCase): string {
+  return (tc.steps ?? [])
+    .map((step) => String(step).trim())
+    .filter(Boolean)
+    .map((step) => `    // ${step.replace(/\s+/g, ' ')}`)
+    .join('\n');
+}
+
+function openHome(): string {
+  return `    await page.goto("/");
+    await expect(page.locator("body")).toBeVisible();`;
+}
+
+function maybeOpenNamedLink(blob: string): string {
+  if (!/regist|signup|sign ?up|form/i.test(blob)) return '';
+  return `    const register = page.getByRole("link", { name: /^register$/i });
+    const signup = page.getByRole("link", { name: /sign ?up|create account/i });
+    if (await register.count()) await register.first().click();
+    else if (await signup.count()) await signup.first().click();`;
 }
 
 function fillVisibleInputs(): string {
@@ -506,33 +514,35 @@ function clickPrimarySubmit(): string {
     }`;
 }
 
-function executableBody(kind: ExecutableKind, formPath: string): string {
-  const form = JSON.stringify(formPath);
+function executableBody(kind: ExecutableKind, formPath: string, blob = ''): string {
+  const form = JSON.stringify(formPath || '/');
   const submit = clickPrimarySubmit();
+  const openForm = maybeOpenNamedLink(`${blob} ${formPath}`);
   switch (kind) {
     case 'navigate':
-      return `    await page.goto("");
-    const link = page.getByRole("link", { name: /register|sign ?up|create account/i }).first();
-    if (await link.count()) await link.click();
-    else await page.goto(${form});
+      return `${openHome()}
+${openForm}
+    if (!(await page.getByRole("link", { name: /^register$/i }).count()) && !(await page.getByRole("link", { name: /sign ?up|create account/i }).count())) await page.goto(${form});
     await expect(page.locator("body")).toBeVisible();`;
     case 'required':
-      return `    await page.goto(${form});
+      return `${openHome()}
+${openForm}
 ${submit}
     await expect(page.locator(".error, [class*='error'], [id*='error']").first()).toBeVisible();`;
     case 'submit':
-      return `    await page.goto(${form});
+      return `${openHome()}
+${openForm}
 ${fillVisibleInputs()}
 ${submit}
     await expect(page.locator("body")).toContainText(/successfully|welcome|created successfully|logged in/i);`;
     case 'negative':
-      return `    await page.goto(${form});
+      return `${openHome()}
+${openForm}
     await expect(page.locator("body")).toBeVisible();
 ${submit}
     await expect(page.locator("body")).toBeVisible();`;
     default:
-      return `    await page.goto("");
-    await expect(page.locator("body")).toBeVisible();`;
+      return openHome();
   }
 }
 
@@ -543,9 +553,11 @@ export function buildExecutableSuiteFromCases(
   const formPath = inferFormPath(opts.specHint ?? '', cases);
   const tests = cases.map((tc, index) => {
     const title = String(tc.title ?? `TC-${String(index + 1).padStart(3, '0')}`);
-    const fromSteps = bodyFromWorkItemSteps(tc);
-    const kind = classifyExecutableCase(title, `${tc.type ?? ''} ${tc.description ?? ''} ${tc.expectedOutcome ?? ''}`);
-    return `  test(${JSON.stringify(title)}, async ({ page }) => {\n${fromSteps ?? executableBody(kind, formPath)}\n  });`;
+    const extras = `${tc.type ?? ''} ${tc.description ?? ''} ${(tc.steps ?? []).join(' ')} ${tc.expectedOutcome ?? ''}`;
+    const kind = classifyExecutableCase(title, extras);
+    const comments = stepComments(tc);
+    const body = [comments, executableBody(kind, formPath, `${title} ${extras}`)].filter(Boolean).join('\n');
+    return `  test(${JSON.stringify(title)}, async ({ page }) => {\n${body}\n  });`;
   });
   return `import { test, expect } from "@playwright/test";
 
@@ -583,7 +595,7 @@ function indentTestBody(body: string): string {
 
 function genericCaseBody(tc: { description?: string; expectedOutcome?: string }): string {
   const expected = String(tc.expectedOutcome ?? '').trim();
-  const lines = ['    await page.goto("");', '    await expect(page.locator("body")).toBeVisible();'];
+  const lines = ['    await page.goto("/");', '    await expect(page.locator("body")).toBeVisible();'];
   if (expected) {
     lines.push(`    await expect(page.locator("body")).toContainText(${JSON.stringify(expected)});`);
   }
@@ -795,20 +807,75 @@ export function flattenPlaywrightJsonReport(report: unknown): {
   };
 }
 
+function fileSlug(title: string, index: number): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  return slug || `test-${index + 1}`;
+}
+
+export function parseDataUrl(value: string | undefined): { mime: string; data: string; ext: string } | null {
+  if (!value?.startsWith('data:')) return null;
+  const match = value.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/);
+  if (!match) return null;
+  const mime = match[1];
+  const ext = mime.includes('png') ? 'png' : mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : mime.includes('zip') ? 'zip' : 'bin';
+  return { mime, data: match[2].replace(/\s/g, ''), ext };
+}
+
+export function collectPlaywrightMediaAttachments(execute: Record<string, unknown> | null | undefined): {
+  fileName: string;
+  content: string;
+  encoding: 'base64';
+  comment: string;
+}[] {
+  if (!execute) return [];
+  const files: { fileName: string; content: string; encoding: 'base64'; comment: string }[] = [];
+  const rows = Array.isArray(execute.results) ? execute.results as { title?: string; screenshot?: string; traceData?: string }[] : [];
+  rows.forEach((row, index) => {
+    const slug = fileSlug(String(row.title ?? 'test'), index);
+    const shot = parseDataUrl(row.screenshot);
+    if (shot) {
+      files.push({
+        fileName: `${slug}.${shot.ext}`,
+        content: shot.data,
+        encoding: 'base64',
+        comment: 'Playwright screenshot',
+      });
+    }
+    const trace = parseDataUrl(row.traceData);
+    if (trace) {
+      files.push({
+        fileName: `${slug}-trace.zip`,
+        content: trace.data,
+        encoding: 'base64',
+        comment: 'Playwright trace. Open with npx playwright show-trace',
+      });
+    }
+  });
+  if (typeof execute.reportZipBase64 === 'string' && execute.reportZipBase64.trim()) {
+    files.push({
+      fileName: 'playwright-report.zip',
+      content: execute.reportZipBase64.trim(),
+      encoding: 'base64',
+      comment: 'Official Playwright HTML report with traces and screenshots',
+    });
+  }
+  return files;
+}
+
 export function buildPlaywrightHtmlReport(result: Record<string, unknown> | null | undefined): string {
   const rec = result ?? {};
   const rows = Array.isArray(rec.results)
-    ? rec.results as { title?: string; status?: string; error?: string; screenshot?: string; traceUrl?: string }[]
+    ? rec.results as { title?: string; status?: string; error?: string; screenshot?: string; traceData?: string }[]
     : [];
-  const reportUrl = typeof rec.reportUrl === 'string' ? rec.reportUrl : '';
-  const rowHtml = rows.map((row) => {
+  const rowHtml = rows.map((row, index) => {
     const status = String(row.status ?? 'unknown');
     const color = status === 'passed' ? '#15803d' : status === 'skipped' ? '#a16207' : '#b91c1c';
     const shot = row.screenshot?.startsWith('data:image')
-      ? `<img src="${row.screenshot}" alt="Failure screenshot" style="max-width:420px;border:1px solid #e2e8f0;border-radius:8px;margin-top:8px" />`
+      ? `<img src="${row.screenshot}" alt="Screenshot" style="max-width:420px;border:1px solid #e2e8f0;border-radius:8px;margin-top:8px" />`
       : '';
-    const trace = row.traceUrl
-      ? `<p><a href="${escapeHtml(row.traceUrl)}">Download trace</a> · open with <code>npx playwright show-trace</code></p>`
+    const slug = fileSlug(String(row.title ?? 'test'), index);
+    const trace = row.traceData?.startsWith('data:')
+      ? `<p><a href="${row.traceData}" download="${slug}-trace.zip">Download Playwright trace</a> · open with <code>npx playwright show-trace</code></p>`
       : '';
     return `<tr><td>${escapeHtml(String(row.title ?? 'test'))}${shot}${trace}</td><td style="color:${color};font-weight:600">${escapeHtml(status)}</td><td>${escapeHtml(row.error ?? '')}</td></tr>`;
   }).join('');
@@ -833,7 +900,7 @@ export function buildPlaywrightHtmlReport(result: Record<string, unknown> | null
      · ${Number(rec.failed ?? 0)} failed
      · source ${escapeHtml(String(rec.source ?? 'playwright'))}</p>
   <p>Base URL: ${escapeHtml(String(rec.baseUrl ?? ''))}</p>
-  ${reportUrl ? `<p><a href="${escapeHtml(reportUrl)}">Open the Playwright HTML report</a> (includes traces and screenshots)</p>` : ''}
+  <p>Screenshots and traces are embedded below. The official Playwright HTML report is also attached as <code>playwright-report.zip</code>.</p>
   <table>
     <thead><tr><th>Test</th><th>Status</th><th>Error</th></tr></thead>
     <tbody>${rowHtml || '<tr><td colspan="3">No test rows</td></tr>'}</tbody>

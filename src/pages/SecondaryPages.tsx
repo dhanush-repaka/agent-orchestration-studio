@@ -8,7 +8,7 @@ import {
   ClipboardCheck, Activity, ScrollText, Settings, CheckCircle2, XCircle,
   RotateCw, Trash2, Edit3, Download, Play, GitCompare, ArrowRight,
   AlertCircle, ShieldCheck, Users, Database, Zap, Clock, Coins, TrendingUp,
-  Save, X, ChevronDown, ChevronUp, ChevronRight, RefreshCw, Globe,
+  Save, X, ChevronDown, ChevronUp, ChevronRight, RefreshCw, Globe, LogOut,
 } from 'lucide-react';
 import type { Credential, EnvColor, Evaluation, AuditLog, Integration, LlmModel, ModelProvider, Prompt } from '@/types';
 import {
@@ -1248,6 +1248,8 @@ export function SettingsPage() {
   const hydrateUsers = useStore((s) => s.hydrateUsers);
   const hydrateEnvironments = useStore((s) => s.hydrateEnvironments);
   const updateUser = useStore((s) => s.updateUser);
+  const restoreAdministrator = useStore((s) => s.restoreAdministrator);
+  const signOut = useStore((s) => s.signOut);
   const addToast = useStore((s) => s.addToast);
   const workspaceName = useStore((s) => s.workspaceName);
   const environment = useStore((s) => s.environment);
@@ -1274,6 +1276,7 @@ export function SettingsPage() {
   const [envNameDrafts, setEnvNameDrafts] = useState<Record<string, string>>({});
   const roster = users.length ? users : (currentUser.id ? [currentUser] : []);
   const isAdmin = isAdministrator(currentUser.role);
+  const hasAdmin = roster.some((u) => isAdministrator(u.role));
   const myEnvs = allowedEnvironmentIds(currentUser, environments);
 
   useEffect(() => {
@@ -1334,6 +1337,20 @@ export function SettingsPage() {
       <div>
         <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Settings</h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">People who have signed into this workspace. Roles persist in user_roles. The header environment switcher only shows environments each person can use.</p>
+      </div>
+
+      <div className="card p-5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="section-title">Session</h3>
+            <p className="text-sm text-slate-700 dark:text-slate-200 mt-1">{currentUser.name}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">{currentUser.email} · {currentUser.role}</p>
+          </div>
+          <button type="button" className="btn-secondary" onClick={() => { void signOut(); }}>
+            <LogOut className="w-4 h-4" />
+            Sign out
+          </button>
+        </div>
       </div>
 
       <div className="card p-5">
@@ -1490,6 +1507,23 @@ export function SettingsPage() {
           <ShieldCheck className="w-5 h-5 text-brand-600 dark:text-brand-400" />
           <h3 className="section-title">Role-Based Access Control</h3>
         </div>
+        {!hasAdmin && currentUser.id && (
+          <div className="mb-4 p-3 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40">
+            <p className="text-sm text-amber-900 dark:text-amber-100 mb-2">
+              No administrator is assigned. Restore your access to manage users, roles, and environments.
+            </p>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={async () => {
+                const ok = await restoreAdministrator();
+                addToast(ok ? 'Administrator access restored' : 'Could not restore administrator access', ok ? 'success' : 'error');
+              }}
+            >
+              Restore administrator
+            </button>
+          </div>
+        )}
         <div className="card overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 dark:bg-slate-800 text-left">

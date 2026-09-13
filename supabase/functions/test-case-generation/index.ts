@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { extractLlmText, parseLlmJson } from "../_shared/llmResponse.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -72,7 +73,7 @@ interface TestCaseGenerationRequest {
 }
 
 const SYSTEM_PROMPT =
-  "You are a senior QA architect. Using the normalized Azure DevOps work item produced by the ADO Work Item Retrieval Agent, write test cases only for the behavior in that work item. Use its acceptance criteria, description, repro steps, and listed scenarios. Do not add a generic login, registration, performance, security, or accessibility catalog unless the work item asks for that. Return ONLY valid JSON.";
+  "You are a senior QA architect. Using the normalized Azure DevOps work item, write several automatable test cases: happy path plus negative and edge cases that work item implies. Never emit one leftover phrase or field name as its own case. Stay on this product and page. Return ONLY valid JSON.";
 
 function buildUserPrompt(workItem: TestCaseGenerationRequest["adoWorkItem"]): string {
   return `Generate test cases from the following retrieved Azure DevOps work item:
@@ -120,15 +121,8 @@ Deno.serve(async (req: Request) => {
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
-    const content: string = llmJson.choices?.[0]?.message?.content ?? "";
-
-    let testCases: unknown = null;
-    try {
-      const cleaned = content.replace(/```json\n?/g, "").replace(/```/g, "").trim();
-      testCases = JSON.parse(cleaned);
-    } catch {
-      testCases = { raw: content };
-    }
+    const content = extractLlmText(llmJson);
+    const testCases = parseLlmJson(content);
 
     return new Response(
       JSON.stringify({

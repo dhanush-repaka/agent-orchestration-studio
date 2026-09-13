@@ -1,9 +1,10 @@
 import type { AdoRepoFile } from './adoGit.ts';
-import { buildPlaywrightHtmlReport, extractPlaywrightSpec, findLatestPlaywrightExecute } from './playwrightSpec.ts';
+import { buildPlaywrightHtmlReport, collectPlaywrightMediaAttachments, extractPlaywrightSpec, findLatestPlaywrightExecute } from './playwrightSpec.ts';
 
 export type AdoAttachment = {
   fileName: string;
   content: string;
+  encoding?: 'utf8' | 'base64';
   comment?: string;
 };
 
@@ -37,9 +38,10 @@ export function collectAdoAttachments(opts: {
     attachments.push({
       fileName: 'playwright-report.html',
       content: html,
-      comment: 'Playwright HTML report',
+      comment: 'Playwright report with embedded screenshots and traces',
     });
   }
+  attachments.push(...collectPlaywrightMediaAttachments(execute));
 
   if (opts.testCases?.length) {
     attachments.push({

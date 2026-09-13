@@ -67,39 +67,134 @@ function listItems(text: string): string[] {
     .filter((line) => line.length > 2);
 }
 
+function wordCount(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function isUrlLine(text: string): boolean {
+  return /^https?:\/\/\S+$/i.test(text.trim());
+}
+
+function isShortVerb(text: string): boolean {
+  return /^(goto|go to|open|click|enter|fill|type|select|submit|confirm|inspect|navigate|verify|check|assert)\.?$/i.test(text.trim());
+}
+
+function isFieldLabel(text: string): boolean {
+  const value = text.replace(/[:.]+$/, '').trim();
+  if (wordCount(value) > 4 || isShortVerb(value) || isUrlLine(value)) return false;
+  if (/\b(given|when|then|user can|users can|should|must|shall)\b/i.test(value)) return false;
+  return /^[A-Z][\w/&' -]+$/.test(value);
+}
+
+function isContinuation(text: string): boolean {
+  const value = text.trim();
+  return /^(the|a|an|to|for|with|and|all|using|from|into|on|in)\b/i.test(value) || /^[a-z]/.test(value);
+}
+
+function isIndependentScenario(text: string): boolean {
+  const value = text.trim();
+  if (!value || isUrlLine(value) || isShortVerb(value) || isFieldLabel(value) || isContinuation(value)) return false;
+  if (/\b(given|when|then|user can|users can|i want|i can|system (shall|should|must)|must be able|should be able|verify that|ensure that)\b/i.test(value)) {
+    return true;
+  }
+  return wordCount(value) >= 6;
+}
+
+export function coalesceStepLines(lines: string[]): string[] {
+  const steps: string[] = [];
+  let current = '';
+  const flush = () => {
+    const next = current.replace(/\s+/g, ' ').trim();
+    if (next) steps.push(next);
+    current = '';
+  };
+  for (const raw of lines) {
+    const line = String(raw ?? '').replace(/^[-*•]\s*/, '').trim();
+    if (!line) continue;
+    if (isUrlLine(line)) {
+      current = current ? `${current} ${line}` : `Open ${line}`;
+      continue;
+    }
+    if (isShortVerb(line)) {
+      flush();
+      current = line.replace(/\.$/, '');
+      continue;
+    }
+    if (current && (isContinuation(line) || isFieldLabel(line))) {
+      current = `${current} ${line}`;
+      continue;
+    }
+    flush();
+    current = line;
+  }
+  flush();
+  return steps;
+}
+
+export function looksLikeProcedure(lines: string[]): boolean {
+  if (lines.length < 2) return false;
+  const fragments = lines.filter((line) => isUrlLine(line) || isShortVerb(line) || isFieldLabel(line) || isContinuation(line) || wordCount(line) <= 3);
+  if (fragments.length >= 2 && fragments.length / lines.length >= 0.35) return true;
+  const uiVerbs = lines.filter((line) => /^(goto|go to|open|click|enter|fill|type|select|submit|confirm|inspect|navigate)\b/i.test(line.trim()));
+  return uiVerbs.length >= 2 && lines.filter(isIndependentScenario).length <= Math.floor(lines.length / 2);
+}
+
+function procedureScenario(title: string, description: string, lines: string[]): WorkItemScenario[] {
+  const steps = coalesceStepLines(lines);
+  if (!steps.length) return [];
+  const expected = steps[steps.length - 1] ?? '';
+  return [{
+    title: title.trim() || steps[0],
+    description: description.trim() || steps.join('\n'),
+    steps,
+    expected,
+  }];
+}
+
+function parseExistingScenarios(existing: unknown): WorkItemScenario[] {
+  if (!Array.isArray(existing) || !existing.length) return [];
+  return existing.map((item, index) => {
+    const rec = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+    const title = String(rec.title ?? rec.action ?? `Scenario ${index + 1}`).trim();
+    const steps = Array.isArray(rec.steps) ? rec.steps.map(String) : [];
+    return {
+      title,
+      description: String(rec.description ?? title),
+      steps,
+      expected: String(rec.expected ?? rec.expectedOutcome ?? ''),
+    };
+  }).filter((item) => item.title);
+}
+
+function linesFromScenarios(scenarios: WorkItemScenario[]): string[] {
+  return scenarios.flatMap((item) => (item.steps.length > 1 ? item.steps : [item.title]));
+}
+
 export function scenariosFromWorkItem(workItem: Record<string, unknown> | null | undefined): WorkItemScenario[] {
   if (!workItem) return [];
-  const existing = workItem.workItemScenarios;
-  if (Array.isArray(existing) && existing.length) {
-    return existing.map((item, index) => {
-      const rec = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-      const title = String(rec.title ?? rec.action ?? `Scenario ${index + 1}`).trim();
-      const steps = Array.isArray(rec.steps) ? rec.steps.map(String) : [];
-      return {
-        title,
-        description: String(rec.description ?? title),
-        steps,
-        expected: String(rec.expected ?? rec.expectedOutcome ?? ''),
-      };
-    }).filter((item) => item.title);
+  const existing = parseExistingScenarios(workItem.workItemScenarios);
+  if (existing.length && !looksLikeProcedure(linesFromScenarios(existing))) {
+    return existing;
   }
 
   const testSteps = parseAdoStepsXml(workItem.testStepsXml ?? workItem.stepsXml);
   if (testSteps.length) {
-    return testSteps.map((step, index) => ({
-      title: step.action || `Step ${index + 1}`,
-      description: step.expected ? `${step.action}. Expect: ${step.expected}` : step.action,
-      steps: [step.action, step.expected].filter(Boolean),
-      expected: step.expected,
-    }));
+    return [{
+      title: String(workItem.title ?? testSteps[0].action ?? 'Test case'),
+      description: stripHtml(workItem.description) || String(workItem.title ?? ''),
+      steps: testSteps.map((step) => step.expected ? `${step.action} (expect: ${step.expected})` : step.action),
+      expected: testSteps[testSteps.length - 1]?.expected || testSteps[testSteps.length - 1]?.action || '',
+    }];
   }
 
   const ac = workItem.acceptanceCriteria;
   const acText = Array.isArray(ac) ? ac.map((item) => stripHtml(item)).join('\n') : stripHtml(ac);
   const description = stripHtml(workItem.description);
   const repro = stripHtml(workItem.reproSteps);
+  const title = String(workItem.title ?? '');
   const items = listItems(acText);
   if (items.length) {
+    if (looksLikeProcedure(items)) return procedureScenario(title, acText || description, items);
     return items.map((item) => ({
       title: item,
       description: item,
@@ -107,17 +202,18 @@ export function scenariosFromWorkItem(workItem: Record<string, unknown> | null |
       expected: item,
     }));
   }
+  if (existing.length && looksLikeProcedure(linesFromScenarios(existing))) {
+    return procedureScenario(title, description || existing.map((item) => item.title).join('\n'), linesFromScenarios(existing));
+  }
   const reproItems = listItems(repro);
   if (reproItems.length) {
-    return [{
-      title: String(workItem.title ?? 'Repro steps'),
-      description: repro,
-      steps: reproItems,
-      expected: reproItems[reproItems.length - 1] ?? '',
-    }];
+    return procedureScenario(title || 'Repro steps', repro, reproItems);
   }
   const descItems = listItems(description);
   if (descItems.length >= 2) {
+    if (looksLikeProcedure(descItems) || descItems.some((item) => !isIndependentScenario(item))) {
+      return procedureScenario(title, description, descItems);
+    }
     return descItems.map((item) => ({
       title: item,
       description: item,
@@ -144,6 +240,32 @@ export function testCasesFromWorkItem(workItem: Record<string, unknown> | null |
     type: /invalid|error|fail|reject|missing|empty/i.test(scenario.title) ? 'negative' : 'functional',
     expectedOutcome: scenario.expected || scenario.title,
   }));
+}
+
+export function testCaseGeneratorPrompt(
+  workItem: unknown,
+  extras?: { analysis?: unknown; previous?: unknown },
+): string {
+  const seed = workItem && typeof workItem === 'object'
+    ? testCasesFromWorkItem(workItem as Record<string, unknown>)
+    : null;
+  return [
+    'Generate multiple automatable test cases from this retrieved work item.',
+    'Cover the happy path plus negative and edge cases the work item implies, such as missing required fields, mismatched values, duplicate identity, and validation failures.',
+    'Each case must be a complete scenario with a real title, steps, and expectedOutcome.',
+    'Never emit one leftover phrase, field name, URL, or verb as its own test case.',
+    'Do not invent a different product. Stay on the page and behavior in this work item.',
+    'If the work item is a registration procedure, generate several registration cases. If it is password reset, generate password-reset cases.',
+    'Return JSON: {"testCases":[{"id":"TC-001","title":"","description":"","preconditions":[],"steps":[],"requirementId":"","priority":"high","type":"functional","expectedOutcome":""}]}',
+    '',
+    'Work item:',
+    JSON.stringify(workItem ?? {}, null, 2),
+    '',
+    'Happy-path seed from the work item. Expand this. Do not return only this seed.',
+    JSON.stringify(seed ?? [], null, 2),
+    extras?.analysis != null ? `\nUpstream analysis:\n${typeof extras.analysis === 'string' ? extras.analysis : JSON.stringify(extras.analysis, null, 2)}` : '',
+    extras?.previous != null ? `\nPrevious node:\n${typeof extras.previous === 'string' ? extras.previous : JSON.stringify(extras.previous, null, 2)}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 export function normalizeAdoFields(fields: Record<string, unknown>, workItemId?: number | string): Record<string, unknown> {

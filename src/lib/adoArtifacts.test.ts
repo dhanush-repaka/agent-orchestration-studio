@@ -70,6 +70,34 @@ describe('adoArtifacts', () => {
     expect(files.some((f) => f.fileName === 'generated.spec.ts')).toBe(false);
   });
 
+  it('attaches screenshots, traces, and the official report zip', () => {
+    const files = collectAdoAttachments({
+      nodeOutputs: {
+        n10: JSON.stringify({
+          passed: false,
+          total: 1,
+          failed: 1,
+          results: [{
+            title: 'register',
+            status: 'failed',
+            screenshot: 'data:image/png;base64,abcd',
+            traceData: 'data:application/zip;base64,eeff',
+          }],
+          source: 'playwright',
+          reportZipBase64: 'UEsDBA',
+        }),
+      },
+    });
+    expect(files.map((f) => f.fileName)).toEqual([
+      'playwright-report.html',
+      'register.png',
+      'register-trace.zip',
+      'playwright-report.zip',
+    ]);
+    expect(files.find((f) => f.fileName === 'register.png')?.encoding).toBe('base64');
+    expect(files.find((f) => f.fileName === 'playwright-report.zip')?.content).toBe('UEsDBA');
+  });
+
   it('names the ADO repo from the work item', () => {
     expect(defaultAdoRepoName(21, 'Parabank Registration')).toBe('aos-parabank-registration-wi-21');
     expect(defaultAdoRepoName(21)).toBe('aos-playwright-wi-21');

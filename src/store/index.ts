@@ -25,8 +25,15 @@ import { callEdgeFunction } from '@/lib/api';
 import { applyStudioDefaults, mergeUserStoryWorkflow, needsUserStoryUpgrade, USER_STORY_WORKFLOW_ID } from '@/lib/workflowSetup';
 import { defaultCustomPrompts, publishReadyErrors, sanitizeAgents } from '@/lib/agents';
 import { authErrorMessage, userFromAuth } from '@/lib/auth';
+import {
+  acceptAuthListenerEvent, loginWithPassword, logoutLocal, registerWithPassword,
+  startAuthListener, type AuthIntent,
+} from '@/lib/session';
 import { loadAuditLogs, newAuditLog, persistAuditLog } from '@/lib/audit';
-import { ensureAdministratorExists, ensureUserRow, loadUserRoles, upsertUserRole } from '@/lib/users';
+import {
+  hydrateUserRoster, pickSignedInUser, signedInFromAuth, rememberedUser, mergeUserRoster,
+  resolveSignedInWorkspace, upsertUserRole, writeLocalUserRoster,
+} from '@/lib/users';
 import { canRole, type Permission } from '@/lib/roles';
 import { runAgentEvalCase, scoreOutputs } from '@/lib/evaluate';
 import {
@@ -220,6 +227,7 @@ interface AppState {
   authStatus: 'loading' | 'signed-out' | 'signed-in';
   hydrateAuth: () => Promise<void>;
   hydrateUsers: () => Promise<void>;
+  restoreAdministrator: () => Promise<boolean>;
   hydrateAuditLogs: () => Promise<void>;
   hydrateStudioModel: () => Promise<void>;
   logAudit: (input: { action: string; resource: string; oldValue?: string; newValue?: string; result?: AuditLog['result'] }) => void;
@@ -358,6 +366,8 @@ function loadWorkspaceSettingsEarly(): {
     return fallback;
   }
 }
+
+let authIntent: AuthIntent = 'idle';
 
 export const useStore = create<AppState>((set, get) => ({
   page: typeof window !== 'undefined' ? pageFromPath(window.location.pathname) : 'dashboard',
@@ -561,21 +571,40 @@ export const useStore = create<AppState>((set, get) => ({
     void persistAuditLog(log);
   },
   hydrateUsers: async () => {
-    const rows = await loadUserRoles();
+    const signedIn = get().authStatus === 'signed-in' ? get().currentUser : undefined;
+    const { users: rows } = await hydrateUserRoster(signedIn);
     set((s) => {
       const access = s.userEnvAccess;
-      const byId = new Map(rows.map((u) => [u.id, applyEnvAccess(u, access)]));
-      if (s.currentUser.id && s.authStatus === 'signed-in' && !byId.has(s.currentUser.id)) {
-        byId.set(s.currentUser.id, applyEnvAccess(s.currentUser, access));
-      }
-      const users = Array.from(byId.values());
-      const currentUser = (s.currentUser.id && byId.get(s.currentUser.id)) || applyEnvAccess(s.currentUser, access);
+      const keepSignedIn = s.authStatus === 'signed-in' ? s.currentUser : undefined;
+      const merged = mergeUserRoster(rows, s.users, keepSignedIn);
+      const users = merged.map((u) => applyEnvAccess(u, access));
+      const listed = keepSignedIn ? users.find((u) => u.id === keepSignedIn.id) : undefined;
+      const resolved = keepSignedIn && listed ? pickSignedInUser(keepSignedIn, listed) : s.currentUser;
+      const currentUser = applyEnvAccess(resolved, access);
       return {
         users,
         currentUser,
         environment: snapEnvironment(s.environment, currentUser, s.environments),
       };
     });
+  },
+  restoreAdministrator: async () => {
+    const me = get().currentUser;
+    if (!me.id || get().authStatus !== 'signed-in') return false;
+    if (get().users.some((row) => row.id !== me.id && isAdministrator(row.role))) return false;
+    const next = { ...me, role: 'Administrator' as const };
+    await upsertUserRole(next);
+    const currentUser = applyEnvAccess(next, get().userEnvAccess);
+    set((s) => ({
+      currentUser,
+      users: s.users.some((row) => row.id === currentUser.id)
+        ? s.users.map((row) => (row.id === currentUser.id ? currentUser : row))
+        : [currentUser, ...s.users],
+      environment: snapEnvironment(s.environment, currentUser, s.environments),
+    }));
+    writeLocalUserRoster(get().users);
+    await get().hydrateUsers();
+    return get().currentUser.role === 'Administrator';
   },
   hydrateStudioModel: async () => {
     const config = await loadStudioModelConfig() ?? FALLBACK_STUDIO_MODEL;
@@ -693,59 +722,107 @@ export const useStore = create<AppState>((set, get) => ({
     });
   },
   hydrateAuth: async () => {
-    const apply = (sessionUser: Parameters<typeof userFromAuth>[0] | null) => {
-      if (sessionUser) {
-        const user = userFromAuth(sessionUser);
-        set((s) => ({
-          authStatus: 'signed-in',
-          currentUser: s.currentUser.id === user.id
-            ? { ...user, role: s.currentUser.role, allowedEnvironments: s.currentUser.allowedEnvironments }
-            : user,
-        }));
-        void ensureUserRow(user).then(async (persisted) => {
-          const promoted = await ensureAdministratorExists(persisted);
-          await get().hydrateUsers();
-          const fromDb = get().users.find((row) => row.id === promoted.id) ?? promoted;
-          set((s) => ({
-            currentUser: applyEnvAccess(fromDb, s.userEnvAccess),
-            environment: snapEnvironment(s.environment, applyEnvAccess(fromDb, s.userEnvAccess), s.environments),
-          }));
+    const enter = (authUser: Parameters<typeof userFromAuth>[0]) => {
+      const stub = userFromAuth(authUser);
+      set((s) => ({
+        authStatus: 'signed-in',
+        currentUser: signedInFromAuth(stub, s.currentUser, rememberedUser(stub.id)),
+      }));
+      void resolveSignedInWorkspace({
+        ...stub,
+        role: get().currentUser.role,
+      }).then(({ current, users }) => {
+        if (get().authStatus !== 'signed-in' || get().currentUser.id !== current.id) return;
+        set((s) => {
+          const currentUser = applyEnvAccess(current, s.userEnvAccess);
+          const roster = mergeUserRoster(users, s.users, currentUser).map((row) => applyEnvAccess(row, s.userEnvAccess));
+          return {
+            users: roster,
+            currentUser,
+            environment: snapEnvironment(s.environment, currentUser, s.environments),
+          };
         });
-        return;
-      }
-      set({ authStatus: 'signed-out' });
-    };
-    try {
-      const { data } = await supabase.auth.getSession();
-      apply(data.session?.user ?? null);
-      supabase.auth.onAuthStateChange((_event, session) => {
-        apply(session?.user ?? null);
+      }).catch((err) => {
+        logStoreError('resolveSignedInWorkspace', err);
       });
-    } catch (err) {
-      logStoreError('hydrateAuth', err);
-      set({ authStatus: 'signed-out' });
-    }
+    };
+    startAuthListener((event, user) => {
+      if (!acceptAuthListenerEvent(event, Boolean(user), authIntent)) return;
+      if (user) enter(user);
+      else set({ authStatus: 'signed-out', currentUser: CURRENT_USER });
+    });
+    window.setTimeout(() => {
+      if (get().authStatus === 'loading') set({ authStatus: 'signed-out' });
+    }, 2000);
   },
   signIn: async (email, password) => {
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-    if (error) return { ok: false, error: authErrorMessage(error) };
-    return { ok: true, error: '' };
+    authIntent = 'in';
+    try {
+      const result = await loginWithPassword(email, password);
+      if (!result.ok || !result.user) {
+        authIntent = 'idle';
+        return { ok: false, error: result.error };
+      }
+      const stub = userFromAuth(result.user);
+      set((s) => ({
+        authStatus: 'signed-in',
+        currentUser: signedInFromAuth(stub, s.currentUser, rememberedUser(stub.id)),
+      }));
+      void resolveSignedInWorkspace({ ...stub, role: get().currentUser.role }).then(({ current, users }) => {
+        if (get().authStatus !== 'signed-in' || get().currentUser.id !== current.id) return;
+        set((s) => {
+          const currentUser = applyEnvAccess(current, s.userEnvAccess);
+          const roster = mergeUserRoster(users, s.users, currentUser).map((row) => applyEnvAccess(row, s.userEnvAccess));
+          return {
+            users: roster,
+            currentUser,
+            environment: snapEnvironment(s.environment, currentUser, s.environments),
+          };
+        });
+      }).catch((err) => {
+        logStoreError('resolveSignedInWorkspace', err);
+      });
+      authIntent = 'idle';
+      return { ok: true, error: '' };
+    } catch (err) {
+      authIntent = 'idle';
+      return { ok: false, error: authErrorMessage(err) };
+    }
   },
   signUp: async (email, password, name) => {
-    const { data, error } = await supabase.auth.signUp({
-      email: email.trim(),
-      password,
-      options: { data: { full_name: name?.trim() || undefined } },
-    });
-    if (error) return { ok: false, error: authErrorMessage(error) };
-    if (data.user && !data.session) {
-      return { ok: true, error: '', needsConfirm: true };
+    authIntent = 'in';
+    try {
+      const result = await registerWithPassword(email, password, name);
+      if (!result.ok) {
+        authIntent = 'idle';
+        return { ok: false, error: result.error };
+      }
+      if (result.needsConfirm || !result.user) {
+        authIntent = 'idle';
+        return { ok: true, error: '', needsConfirm: Boolean(result.needsConfirm) };
+      }
+      const stub = userFromAuth(result.user);
+      set((s) => ({
+        authStatus: 'signed-in',
+        currentUser: signedInFromAuth(stub, s.currentUser, rememberedUser(stub.id)),
+      }));
+      authIntent = 'idle';
+      return { ok: true, error: '' };
+    } catch (err) {
+      authIntent = 'idle';
+      return { ok: false, error: authErrorMessage(err) };
     }
-    return { ok: true, error: '' };
   },
   signOut: async () => {
-    await supabase.auth.signOut();
+    authIntent = 'out';
     set({ authStatus: 'signed-out', currentUser: CURRENT_USER });
+    try {
+      await logoutLocal();
+    } catch (err) {
+      logStoreError('signOut', err);
+    } finally {
+      authIntent = 'idle';
+    }
   },
 
   selectedAgentId: null,
@@ -1261,6 +1338,7 @@ export const useStore = create<AppState>((set, get) => ({
     });
     const next = get().users.find((u) => u.id === id) ?? (get().currentUser.id === id ? get().currentUser : undefined);
     if (next) void upsertUserRole(next);
+    writeLocalUserRoster(get().users);
     void persistUserEnvAccess(get().userEnvAccess);
     get().logAudit({
       action: 'update_user',
@@ -1551,6 +1629,7 @@ export const useStore = create<AppState>((set, get) => ({
       runId,
       resume,
       persistProgress: persistLive,
+      preferredModel: get().studioModel?.model,
       callbacks,
     });
 

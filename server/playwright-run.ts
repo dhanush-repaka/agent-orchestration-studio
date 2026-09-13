@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, extname, join, relative, resolve } from 'node:path';
@@ -90,9 +90,9 @@ export function buildPlaywrightRunnerConfig(baseUrl: string, chrome: ChromeLaunc
   use: {
     baseURL: ${JSON.stringify(baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`)},
     headless: true,
-    screenshot: 'only-on-failure',
+    screenshot: ${lambda ? "'only-on-failure'" : "'on'"},
     video: 'off',
-    trace: ${lambda ? "'off'" : "'retain-on-failure'"},
+    trace: ${lambda ? "'off'" : "'on'"},
     launchOptions: {
       executablePath: ${chrome.executablePath ? JSON.stringify(chrome.executablePath) : 'undefined'},
       args: ${JSON.stringify(chrome.args)},
@@ -103,7 +103,22 @@ export function buildPlaywrightRunnerConfig(baseUrl: string, chrome: ChromeLaunc
 `;
 }
 
-function pruneOldRuns(root: string, keep = 8) {
+const TRACE_DATA_MAX_BYTES = 8_000_000;
+const REPORT_ZIP_MAX_BYTES = 8_000_000;
+
+export function zipPlaywrightReport(runDir: string): Buffer | null {
+  const reportDir = join(runDir, 'playwright-report');
+  if (!existsSync(join(reportDir, 'index.html'))) return null;
+  const zipPath = join(runDir, 'playwright-report.zip');
+  const zipped = spawnSync('zip', ['-r', '-q', zipPath, 'playwright-report'], {
+    cwd: runDir,
+    encoding: 'buffer',
+  });
+  if (zipped.status !== 0 || !existsSync(zipPath)) return null;
+  return readFileSync(zipPath);
+}
+
+function pruneOldRuns(root: string, keep = 16) {
   if (!existsSync(root)) return;
   const dirs = readdirSync(root)
     .filter((name) => name.startsWith('pw-'))
@@ -142,20 +157,36 @@ function hydrateRunArtifacts(dir: string, results: PlaywrightSpecResult[]): Play
       if (!next.screenshot && (att.name === 'screenshot' || att.contentType?.startsWith('image/'))) {
         next.screenshot = `data:${att.contentType || 'image/png'};base64,${readFileSync(att.path).toString('base64')}`;
       }
-      if (!next.traceUrl && (att.name === 'trace' || att.path.endsWith('.zip'))) {
-        next.traceUrl = `/__studio/playwright-artifacts/${artifactId}/${relative(dir, att.path).replace(/\\/g, '/')}`;
+      if (att.name === 'trace' || att.path.endsWith('.zip') || att.path.endsWith('trace.zip')) {
+        if (!next.traceUrl) {
+          next.traceUrl = `/__studio/playwright-artifacts/${artifactId}/${relative(dir, att.path).replace(/\\/g, '/')}`;
+        }
+        if (!next.traceData) {
+          const buf = readFileSync(att.path);
+          if (buf.length <= TRACE_DATA_MAX_BYTES) {
+            next.traceData = `data:application/zip;base64,${buf.toString('base64')}`;
+          }
+        }
       }
     }
-    if (!next.screenshot || !next.traceUrl) {
+    if (!next.screenshot || !next.traceUrl || !next.traceData) {
       const slug = row.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
       for (const file of walkFiles(join(dir, 'test-results'))) {
         const name = file.toLowerCase();
-        if (!name.includes(slug.slice(0, 24)) && !name.includes('test-failed')) continue;
-        if (!next.screenshot && extname(file) === '.png') {
+        if (!name.includes(slug.slice(0, 24)) && !name.includes('test-failed') && !name.endsWith('trace.zip')) continue;
+        if (!next.screenshot && extname(file) === '.png' && (name.includes(slug.slice(0, 24)) || name.includes('test-failed'))) {
           next.screenshot = `data:image/png;base64,${readFileSync(file).toString('base64')}`;
         }
-        if (!next.traceUrl && name.endsWith('trace.zip')) {
-          next.traceUrl = `/__studio/playwright-artifacts/${artifactId}/${relative(dir, file).replace(/\\/g, '/')}`;
+        if (name.endsWith('trace.zip') && (name.includes(slug.slice(0, 24)) || !next.traceUrl)) {
+          if (!next.traceUrl) {
+            next.traceUrl = `/__studio/playwright-artifacts/${artifactId}/${relative(dir, file).replace(/\\/g, '/')}`;
+          }
+          if (!next.traceData) {
+            const buf = readFileSync(file);
+            if (buf.length <= TRACE_DATA_MAX_BYTES) {
+              next.traceData = `data:application/zip;base64,${buf.toString('base64')}`;
+            }
+          }
         }
       }
     }
@@ -423,6 +454,10 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
     const reportUrl = existsSync(reportPath)
       ? `/__studio/playwright-artifacts/${artifactId}/playwright-report/index.html`
       : undefined;
+    const reportZip = zipPlaywrightReport(dir);
+    const reportZipBase64 = reportZip && reportZip.length <= REPORT_ZIP_MAX_BYTES
+      ? reportZip.toString('base64')
+      : undefined;
     const missingBrowser = /Executable doesn't exist|browserType\.launch/i.test(`${ran.stdout}\n${ran.stderr}`);
     const body = {
       ...summary,
@@ -438,6 +473,7 @@ export async function executeSpec(body: Record<string, unknown>): Promise<Runner
       spec,
       artifactDir: artifactId,
       ...(reportUrl ? { reportUrl } : {}),
+      ...(reportZipBase64 ? { reportZipBase64 } : {}),
     };
     pruneOldRuns(root);
     return {

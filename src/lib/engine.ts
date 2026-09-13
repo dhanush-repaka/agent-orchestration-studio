@@ -7,7 +7,8 @@ import { applyDataNode, collectBranch, collectLoopBody, parseMaybeJson as parseD
 import { classifyLiveTool, liveToolsOf, parseToolRequest } from './tools';
 import { apiKnowledgeUrls } from './knowledge';
 import { collectAdoAttachments, collectAdoRepoFiles } from './adoArtifacts';
-import { extractAdoWorkItem, testCasesFromWorkItem } from './adoWorkItem';
+import { extractAdoWorkItem, testCaseGeneratorPrompt } from './adoWorkItem';
+import { recoverTestCases } from './llmResponse';
 import { defaultAdoRepoName } from './adoGit';
 import {
   buildExecutableSuiteFromCases,
@@ -290,6 +291,7 @@ async function runAgentNode(
   agents: Map<string, Agent>,
   log: (level: LogEntry['level'], source: LogEntry['source'], message: string) => void,
   invoke: InvokeFn,
+  preferredModel?: string,
 ): Promise<{ output: string; tokens: number; model?: string; error?: string; toolCalls?: { tool: string; result: string }[] }> {
   const cfg = asConfig(node.data.config);
   if (!agent) {
@@ -417,7 +419,7 @@ async function runAgentNode(
     temperature: cfg.temperature ?? agent.temperature,
     maxTokens: cfg.maxTokens ?? agent.maxTokens,
     topP: cfg.topP ?? agent.topP,
-    modelName: agent.modelName,
+    modelName: preferredModel || agent.modelName,
     upstreamData: Object.keys(upstream).length ? upstream : { workflowInput, inputs: resolvedInputs },
     resolvedInputs,
     workflowName: workflow.name,
@@ -430,16 +432,10 @@ async function runAgentNode(
   }
   if (agent.type === 'Test Case Generator') {
     const workItem = extractAdoWorkItem(upstream, workflowInput);
-    const fromWorkItem = testCasesFromWorkItem(workItem);
-    if (fromWorkItem?.length) {
-      log('info', 'agent', `Using ${fromWorkItem.length} scenario(s) from the retrieved work item`);
-      return {
-        output: JSON.stringify({ testCases: fromWorkItem, source: 'work-item' }, null, 2),
-        tokens: 0,
-        model: 'work-item-scenarios',
-      };
-    }
-    payload.userPrompt = `Generate automatable test cases only from this retrieved work item. Use its title, description, acceptance criteria, repro steps, and listed scenarios. Do not add a generic login, registration, SQL injection, performance, or accessibility catalog unless that behavior is in the work item. The number of cases should match the work item, not a fixed count.\n\nWork item:\n${stringifyOutput(workItem ?? workflowInput)}\n\nUpstream analysis:\n${stringifyOutput(resolvedInputs)}\n\nPrevious node:\n${stringifyOutput(ctx.previousOutput)}`;
+    payload.userPrompt = testCaseGeneratorPrompt(workItem ?? workflowInput, {
+      analysis: resolvedInputs,
+      previous: ctx.previousOutput,
+    });
   }
   if (agent.type === 'Playwright Automation') {
     const execute = findLatestPlaywrightExecute(nodeOutputs);
@@ -503,7 +499,7 @@ async function runAgentNode(
     const spec = extractPlaywrightSpec(stringifyOutput(ctx.previousOutput), { ...upstream, inputs: resolvedInputs });
     const locators = extractUpstreamLocators(upstream);
     if (spec) {
-      payload.userPrompt = `Review this Playwright spec. page.goto("") is valid when Playwright baseURL is set. Flag invented locators or page text that is not in the test cases, unimplemented tests, and missing assertions. Return JSON { score (0-10), issues: [{ type, description }], recommendation }.\n\nSpec:\n${spec}\n\nDiscovered locators:\n${JSON.stringify(locators)}`;
+      payload.userPrompt = `Review this Playwright spec. page.goto("/") uses the run base URL. Flag invented locators or page text that is not in the test cases, unimplemented tests, and missing assertions. Return JSON { score (0-10), issues: [{ type, description }], recommendation }.\n\nSpec:\n${spec}\n\nDiscovered locators:\n${JSON.stringify(locators)}`;
     }
   }
   if (agent.type === 'Defect Analysis') {
@@ -540,7 +536,7 @@ async function runAgentNode(
     payload.userPrompt = `${payload.userPrompt ?? ''}\n\nKnowledge context:\n${knowledgeBits.join('\n')}`;
   }
 
-  log('info', 'agent', `Calling ${agent.displayName} (${agent.modelProvider} / ${agent.modelName})`);
+  log('info', 'agent', `Calling ${agent.displayName} (${agent.modelProvider} / ${preferredModel || agent.modelName})`);
   const { ok, data } = await invoke<AgentProcessorResult>('agent-processor', payload as unknown as Record<string, unknown>);
   if (!ok || data.error) {
     const err = data.error ?? 'Agent processor failed';
@@ -552,6 +548,12 @@ async function runAgentNode(
   }
   const result = data.result ?? data;
   let output = stringifyOutput(result);
+  if (agent.type === 'Test Case Generator') {
+    const recovered = recoverTestCases(result);
+    if (recovered?.length) {
+      output = JSON.stringify({ testCases: recovered, source: 'llm' }, null, 2);
+    }
+  }
   if (agent.type === 'Code Review') {
     const rec = result && typeof result === 'object' && !Array.isArray(result)
       ? result as Record<string, unknown>
@@ -662,6 +664,7 @@ export async function executeWorkflow(opts: {
   resume?: ReplayResume;
   delayMs?: number;
   persistProgress?: (run: WorkflowRun) => void | Promise<void>;
+  preferredModel?: string;
 }): Promise<WorkflowRun> {
   const { workflow: wf, agents, callbacks, invoke } = opts;
   const delayMs = opts.delayMs ?? 280;
@@ -928,10 +931,12 @@ export async function executeWorkflow(opts: {
               `Publishing ${casesToCreate.length} test case(s), ${attachments.length} attachment(s), and ${repoFiles.length} repo file(s) to Azure DevOps`,
               currentId,
             );
+            const execute = findLatestPlaywrightExecute(nodeOutputs);
             const { ok, data } = await invoke<Record<string, unknown>>('ado-upload', {
               testCases: casesToCreate,
               attachments,
               repoFiles,
+              playwrightArtifactDir: typeof execute?.artifactDir === 'string' ? execute.artifactDir : undefined,
               adoRepoName: cfg.adoRepoName || defaultAdoRepoName(sourceWorkItemId, typeof ado?.title === 'string' ? ado.title : undefined),
               sourceWorkItemId,
               adoOrg: cfg.adoOrg || undefined,
@@ -1147,7 +1152,7 @@ export async function executeWorkflow(opts: {
             const retries = toolAgent ? 0 : Math.max(0, cfg.retryCount ?? agent?.retryCount ?? 0);
             let last: Awaited<ReturnType<typeof runAgentNode>> | null = null;
             for (let attempt = 0; attempt <= retries; attempt++) {
-              last = await runAgentNode(node, agent, wf, workflowInput, nodeOutputs, nodes, agentMap, (l, s, m) => addLog(l, s, m, currentId), invoke);
+              last = await runAgentNode(node, agent, wf, workflowInput, nodeOutputs, nodes, agentMap, (l, s, m) => addLog(l, s, m, currentId), invoke, opts.preferredModel);
               if (!last.error) break;
               if (attempt < retries) addLog('warning', 'agent', `Retry ${attempt + 1}/${retries}: ${last.error}`, currentId);
             }

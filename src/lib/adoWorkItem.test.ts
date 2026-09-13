@@ -5,6 +5,7 @@ import {
   parseAdoStepsXml,
   scenariosFromWorkItem,
   stripHtml,
+  testCaseGeneratorPrompt,
   testCasesFromWorkItem,
 } from '@/lib/adoWorkItem';
 
@@ -75,6 +76,61 @@ describe('adoWorkItem', () => {
     }, 88);
     expect(normalized.title).toBe('Checkout');
     expect(normalized.testSteps).toEqual([{ action: 'Open cart', expected: 'Cart is visible' }]);
-    expect(testCasesFromWorkItem(normalized)?.[0].title).toBe('Open cart');
+    expect(testCasesFromWorkItem(normalized)?.[0].title).toBe('Checkout');
+    expect(testCasesFromWorkItem(normalized)?.[0].steps).toEqual(['Open cart (expect: Cart is visible)']);
+  });
+
+  it('does not turn a single registration procedure into one case per leftover phrase', () => {
+    const cases = testCasesFromWorkItem({
+      id: 21,
+      title: 'Parabank Registration',
+      description: [
+        'Goto Parabank site',
+        'https://parabank.parasoft.com/parabank/index.htm',
+        '- Open',
+        'the target URL in the browser using Playwright MCP.',
+        'Confirm',
+        'the ParaBank home page is displayed.',
+        'Click',
+        'the Register link.',
+        'Inspect',
+        'the registration page and identify every required field.',
+        'Enter',
+        'realistic, unique test data for all mandatory fields:',
+        'First Name',
+        'Last Name',
+        'Address',
+        'City',
+        'State',
+        'Zip',
+        'Code',
+        'Phone',
+        'Number',
+        'SSN',
+        'Username',
+        'Password',
+        'Confirm Password',
+        'Submit',
+        'the registration form.',
+      ].join('\n'),
+    });
+    expect(cases).toHaveLength(1);
+    expect(cases?.[0].title).toBe('Parabank Registration');
+    expect(cases?.[0].steps.some((step) => step.includes('Click the Register link'))).toBe(true);
+    expect(cases?.[0].steps.some((step) => step.includes('Submit the registration form'))).toBe(true);
+    expect(cases?.[0].steps).not.toContain('Click');
+    expect(cases?.[0].steps).not.toContain('First Name');
+    expect(cases?.[0].expectedOutcome).toBe('Submit the registration form.');
+  });
+
+  it('asks the model to expand a procedure into several cases', () => {
+    const prompt = testCaseGeneratorPrompt({
+      id: 21,
+      title: 'Parabank Registration',
+      description: 'Goto Parabank site\nClick the Register link.\nSubmit the registration form.',
+    });
+    expect(prompt).toContain('Generate multiple automatable test cases');
+    expect(prompt).toContain('Happy-path seed');
+    expect(prompt).toContain('Parabank Registration');
   });
 });

@@ -34,6 +34,8 @@ export function LoginPage() {
         setInfo('Account created. Confirm the email in Supabase Auth, then sign in.');
         setMode('signin');
       }
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : 'Authentication failed.');
     } finally {
       setBusy(false);
     }

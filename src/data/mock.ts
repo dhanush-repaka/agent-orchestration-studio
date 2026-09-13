@@ -114,8 +114,8 @@ export const AGENTS: Agent[] = [
     timeoutSec: 60,
     retryCount: 2,
     prompt: basePrompt(
-      'You are a senior QA architect. Using the retrieved work item, design automatable test cases that cover only the behavior in that work item. The number of cases should match its scenarios or acceptance criteria, not a fixed catalog. Do not invent a standard login or registration suite. Return ONLY valid JSON.',
-      'Generate test cases from the retrieved work item:\n\n{{previous_agent_output}}\n\nEach case needs: id, title, description, preconditions, steps, requirementId, priority (critical/high/medium/low), type (functional/negative/edge), and expectedOutcome. Group them under a "testCases" array. Do not include markdown fences or commentary.'
+      'You are a senior QA architect. Using the retrieved work item, design several automatable test cases: happy path plus negative and edge cases that work item implies. Never emit one leftover phrase or field name as its own case. Stay on this product and page. Return ONLY valid JSON.',
+      'Generate multiple test cases from the retrieved work item:\n\n{{previous_agent_output}}\n\nEach case needs: id, title, description, preconditions, steps, requirementId, priority (critical/high/medium/low), type (functional/negative/edge), and expectedOutcome. Group them under a "testCases" array. Do not include markdown fences or commentary.'
     ),
     promptHistory: [],
     inputs: [

@@ -16,11 +16,21 @@ export function PlaywrightReportButton({
       className={className}
       aria-label="Open Playwright report"
       onClick={() => {
-        if (report.reportUrl) {
-          window.open(report.reportUrl, '_blank', 'noopener,noreferrer');
-          return;
-        }
-        if (report.html) openPlaywrightHtmlReport(report.html);
+        void (async () => {
+          if (report.reportUrl) {
+            const url = new URL(report.reportUrl, window.location.origin).href;
+            try {
+              const ping = await fetch(url, { method: 'HEAD' });
+              if (ping.ok) {
+                window.open(url, '_blank', 'noopener,noreferrer');
+                return;
+              }
+            } catch {
+              // Fall back to the embedded report when the on-disk folder is gone.
+            }
+          }
+          if (report.html) openPlaywrightHtmlReport(report.html);
+        })();
       }}
     >
       <ExternalLink className="w-4 h-4" /> Open Playwright report

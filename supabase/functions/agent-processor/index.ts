@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { extractLlmText, parseLlmJson, usesCompletionTokenBudget } from "../_shared/llmResponse.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -34,28 +35,42 @@ async function callLlm(
   if (preferred !== FALLBACK_MODEL) models.push(FALLBACK_MODEL);
 
   for (const model of models) {
-    try {
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }),
-      });
-      if (!res.ok) {
-        const errText = await res.text();
-        if (model === models[models.length - 1]) {
-          return { llmJson: null, usedModel: model, error: `LLM request failed (${res.status}): ${errText}` };
+    const tokenBudget = usesCompletionTokenBudget(model) ? Math.max(maxTokens, 8000) : maxTokens;
+    const bodies: Record<string, unknown>[] = usesCompletionTokenBudget(model)
+      ? [{ model, messages, max_completion_tokens: tokenBudget }]
+      : [
+        { model, messages, temperature, max_tokens: tokenBudget },
+        { model, messages, max_completion_tokens: tokenBudget },
+        { model, messages, max_tokens: tokenBudget },
+      ];
+    let lastError = "";
+    for (const body of bodies) {
+      try {
+        const res = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          lastError = `LLM request failed (${res.status}): ${await res.text()}`;
+          if (/max_tokens|max_completion_tokens|temperature/i.test(lastError)) continue;
+          break;
         }
-        continue;
+        const json = await res.json();
+        if (!extractLlmText(json).trim()) {
+          lastError = "Model returned empty content";
+          continue;
+        }
+        return { llmJson: json as Record<string, unknown>, usedModel: model, error: null };
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : "Network error";
       }
-      const json = await res.json();
-      return { llmJson: json as Record<string, unknown>, usedModel: model, error: null };
-    } catch (err) {
-      if (model === models[models.length - 1]) {
-        return { llmJson: null, usedModel: model, error: err instanceof Error ? err.message : "Network error" };
-      }
+    }
+    if (model === models[models.length - 1]) {
+      return { llmJson: null, usedModel: model, error: lastError || "LLM request failed" };
     }
   }
   return { llmJson: null, usedModel: FALLBACK_MODEL, error: "All model attempts failed" };
@@ -92,6 +107,8 @@ const SYSTEM_PROMPTS: Record<string, string> = {
     "You are a senior QA engineer specializing in defect analysis. Given the upstream code review and/or test execution results, analyze potential defects. Return ONLY valid JSON with: defectTitle, severity ('critical'|'high'|'medium'|'low'), steps (array of strings), rootCause (string), recommendation (string). Do not include markdown fences or commentary.",
   "Report Generator":
     "You are a senior QA reporting specialist. Given Playwright execute results and the rest of the workflow outputs, generate a comprehensive markdown test execution report. Include: executive summary, actual pass/fail counts and test titles, defects found, quality assessment, and recommendations. Do not write a report that only restates a condition expression. Return ONLY markdown text — no JSON, no code fences around the entire output.",
+  "Test Case Generator":
+    "You are a senior QA architect. Write test cases only for the retrieved work item. Return ONLY valid JSON with a testCases array. Each case needs id, title, description, preconditions, steps, requirementId, priority, type, and expectedOutcome. Do not invent a login or registration catalog.",
 };
 
 function buildUserPrompt(agentType: string, upstreamData: Record<string, unknown>, workflowName?: string): string {
@@ -165,18 +182,11 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const content: string = (llmJson as Record<string, unknown>).choices?.[0] && typeof ((llmJson as Record<string, { message?: { content?: string } }>).choices[0]) === 'object'
-      ? ((llmJson as Record<string, { message?: { content?: string } }[]>).choices[0] as { message?: { content?: string } })?.message?.content ?? ""
-      : "";
+    const content = extractLlmText(llmJson);
 
     let result: unknown = content;
     if (!isCodeOutput && !isMarkdownOutput) {
-      try {
-        const cleaned = content.replace(/```json\n?/g, "").replace(/```/g, "").trim();
-        result = JSON.parse(cleaned);
-      } catch {
-        result = { raw: content };
-      }
+      result = parseLlmJson(content);
     } else if (isCodeOutput) {
       result = content.replace(/^```(?:typescript|ts)?\n?/g, "").replace(/```$/g, "").trim();
     }
